@@ -1,0 +1,71 @@
+# Unitree L2 示例：确认雷达/IMU 安装外参，下面单位外参只适用于同源坐标系。
+ly_lio:
+  ros__parameters:
+    lidar_topic: /unilidar/cloud
+    imu_topic: /unilidar/imu
+    lidar_type: unilidar
+    lidar_frame: unilidar_lidar
+    body_frame: unilidar_imu
+    imu_frame: unilidar_imu          # 输出原点与 IMU 相同，此例无需安装外参。
+    odom_frame: odom
+    # Unitree timestamp 是相对包头时间的秒偏移。
+    timestamp_mode: relative
+    timestamp_scale: 1.0
+    # 逐点 Point-LIO：保留真实测量点及其时间，匹配历史地图中的局部平面。
+    point_filter_num: 1
+    space_downsample: true
+    space_downsample_leaf_size: 0.20
+    map_resolution: 0.20
+    map_capacity: 1000000
+    map_max_points_per_voxel: 20
+    map_min_point_distance: 0.05
+    # 静止标定完成后再收集5帧建立初始地图；不使用标定前的扫描。
+    init_map_size: 100
+    init_map_scans: 5
+    laser_point_cov: 0.01
+    plane_threshold: 0.10
+    match_sqaured: 81.0
+
+    min_distance: 0.5
+    max_distance: 100.0
+    max_buffer_points: 2000000
+    max_buffer_imu: 20000
+    max_imu_gap: 0.1               # s；断流/溢出则重建odom，禁止跨缺失IMU区间积分。
+
+    imu_en: true
+    gravity: [0.0, 0.0, -9.81]
+    fix_gravity_direction: true     # 静止采集后估计重力方向；运动启动时设为 false。
+    init_imu_samples: 200
+    check_satu: true
+    satu_acc: 30.0                   # 输入单位 m/s²；按设备实际量程配置。
+    satu_gyro: 35.0                 # rad/s
+    acc_norm: 9.81                  # 输入为 m/s²，静止比力模长设为 9.81。
+
+    extrinsic_est_en: false
+    extrinsic_T: [0.0, 0.0, 0.0]
+    extrinsic_R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+    # R：IMU观测噪声；激光点到地图平面噪声见 laser_point_cov。
+    imu_meas_acc_cov: 0.01
+    imu_meas_omg_cov: 0.01
+    # Q：速度、比力、角速度及两个零偏的离散过程噪声。
+    velocity_cov: 20.0
+    acceleration_cov: 500.0
+    omg_cov: 1000.0
+    ba_cov: 0.0001
+    bg_cov: 0.0001
+
+    publish_odometry_without_downsample: false
+    publish_tf: true
+    publish_path: true
+    path_max_poses: 10000
+    path_publish_interval: 0.1
+    save_pcd: false
+    save_map_resolution: 0.02
+    map_path: maps/ly_lio.pcd       # 相对路径基于进程工作目录，也可填绝对路径。
+
+    # PLIO风格终端面板；独立墙钟定时刷新，断流时仍会更新状态。
+    terminal.enabled: true
+    terminal.clear_screen: true    # 仅交互TTY清屏；重定向/管道自动输出普通文本。
+    terminal.refresh_rate_hz: 10.0 # 与PLIO默认扫描打印频率一致；只影响显示。
+    terminal.stale_timeout: 1.0    # s；有效采样stamp停止推进超过该时长显示STALE。

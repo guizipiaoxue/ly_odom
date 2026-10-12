@@ -1,11 +1,13 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 import launch
 
 ################### user configure parameters for ros2 start ###################
-xfer_format   = 1    # 0-Pointcloud2(PointXYZRTL), 1-customized pointcloud format
+xfer_format   = 0    # 0-Pointcloud2(PointXYZRTL), required by pcl_publisher
 multi_topic   = 0    # 0-All LiDARs share the same topic, 1-One LiDAR one topic
 data_src      = 0    # 0-lidar, others-Invalid data src
 publish_freq  = 10.0 # freqency of publish, 5.0, 10.0, 20.0, 50.0, etc.
@@ -42,6 +44,14 @@ def generate_launch_description():
         )
 
     return LaunchDescription([
+        # PTP 未锁定时驱动丢弃数据，禁止退回主机收包时钟造成时间戳跳变。
+        DeclareLaunchArgument('ptp_utc_offset', default_value='37',
+                              description='实测设备输出 TAI，转 ROS UTC；UTC 固件设为 0'),
+        DeclareLaunchArgument('target_ip', default_value='192.168.1.3',
+                              description='只接收并配置该 MID360，避免其他雷达混入'),
+        SetEnvironmentVariable('LIVOX_REQUIRE_PTP_SYNC', '1'),
+        SetEnvironmentVariable('LIVOX_PTP_UTC_OFFSET', LaunchConfiguration('ptp_utc_offset')),
+        SetEnvironmentVariable('LIVOX_TARGET_IP', LaunchConfiguration('target_ip')),
         livox_driver,
         # launch.actions.RegisterEventHandler(
         #     event_handler=launch.event_handlers.OnProcessExit(

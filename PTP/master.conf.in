@@ -1,0 +1,26 @@
+# MID360：IEEE 1588v2 / UDP IPv4 / E2E / domain 0。
+# 主机系统 UTC → 网卡 PHC（PTP/TAI 时间）→ 雷达。勿反向调系统时钟。
+[global]
+twoStepFlag             1
+time_stamping           hardware
+network_transport      UDPv4
+delay_mechanism        E2E
+domainNumber           0
+priority1              10
+priority2              10
+clockClass             248
+clockAccuracy          0xFE
+offsetScaledLogVariance 0xFFFF
+utc_offset             37
+timeSource             0xA0
+logAnnounceInterval    1
+logSyncInterval        0
+logMinDelayReqInterval 0
+tx_timestamp_timeout   20
+uds_address            /run/ly-ptp4l-@INTERFACE@
+use_syslog             0
+verbose                1
+
+[@INTERFACE@]
+# linuxptp 3.1（Ubuntu 22.04）使用 masterOnly，拒绝切换为从时钟。
+masterOnly             1

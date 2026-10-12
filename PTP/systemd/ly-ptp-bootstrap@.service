@@ -1,0 +1,11 @@
+[Unit]
+Description=Initialize %i PHC from UTC before lidar acquisition
+After=network-online.target
+Wants=network-online.target
+Before=ly-ptp4l@%i.service ly-phc2sys@%i.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/ly-ptp/bootstrap.py %i /etc/linuxptp/ly-odom/master-%i.conf
+RemainAfterExit=yes
+TimeoutStartSec=40

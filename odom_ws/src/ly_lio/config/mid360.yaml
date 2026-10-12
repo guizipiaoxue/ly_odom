@@ -1,0 +1,81 @@
+# 输入原始传感器数据；安装外参仅用于输出位姿，不预先平移 IMU 测量原点。
+ly_lio:
+  ros__parameters:
+    lidar_topic: /livox/lidar
+    imu_topic: /livox/imu
+    lidar_type: livox_pointcloud2
+    lidar_frame: livox_frame
+    imu_frame: livox_frame
+    body_frame: baselink
+    odom_frame: odom
+    # scripts/odom.sh 传入 body_extrinsic_path，读取 pcl_ws/config/lidar2baselink.yaml。
+    # 独立 launch 时传 body_config_path:=该文件绝对路径。
+    publish_sensor_tf: true         # baselink→livox_frame 固定安装 TF。
+    # 当前 Livox 驱动的 FLOAT64 timestamp 是相对 header.stamp 的纳秒偏移。
+    timestamp_mode: relative
+    timestamp_scale: 1.0e-9
+    # 逐点 Point-LIO：保留真实测量点及其时间，匹配历史地图中的局部平面。
+    point_filter_num: 1
+    space_downsample: true
+    space_downsample_leaf_size: 0.20
+    map_resolution: 0.20
+    map_capacity: 1000000
+    map_max_points_per_voxel: 20
+    map_min_point_distance: 0.05
+    # 静止标定完成后再收集5帧建立初始地图；不使用标定前的扫描。
+    init_map_size: 100
+    init_map_scans: 5
+    laser_point_cov: 0.01
+    plane_threshold: 0.10
+    match_sqaured: 81.0
+
+    min_distance: 0.5
+    max_distance: 100.0
+    max_buffer_points: 2000000
+    max_buffer_imu: 20000
+    max_imu_gap: 0.1               # s；断流/溢出则重建odom，禁止跨缺失IMU区间积分。
+
+    imu_en: true
+    gravity: [0.0, 0.0, -9.81]
+    fix_gravity_direction: true     # 静止采集估计重力与零偏；运动窗口等待后续静止。
+    init_imu_samples: 200
+    init_max_gyro_mean: 0.05         # rad/s，允许设备零偏，拒绝明显持续旋转。
+    init_max_gyro_std: 0.02          # rad/s，三轴标准差最大值。
+    init_max_accel_std: 0.30         # m/s²，内部先转换SI单位再判断。
+    init_max_gravity_error: 0.75     # m/s²，平均加速度模长与重力的差。
+    check_satu: true
+    satu_acc: 3.0                   # 输入原始单位 g；SI 数据应改为设备阈值 m/s²。
+    satu_gyro: 35.0                 # rad/s
+    acc_norm: 1.0                  # 静止加速度模长；若输入 m/s²，则设为 9.81。
+
+    extrinsic_est_en: false
+    # 此处只描述 lidar→IMU；沿用当前 MID360 雷达/IMU 同源参考系假设。
+    extrinsic_T: [0.0, 0.0, 0.0]
+    extrinsic_R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+    # R：IMU观测噪声；激光点到地图平面噪声见 laser_point_cov。
+    imu_meas_acc_cov: 0.01
+    imu_meas_omg_cov: 0.01
+    # Q：沿用原200Hz IMU的数值，以Q*参考周期转换方差率，再乘实际传播时长。
+    process_noise_reference_dt: 0.005 # s；不随激光点时间分段改变累计噪声。
+    velocity_cov: 20.0
+    acceleration_cov: 500.0
+    omg_cov: 1000.0
+    ba_cov: 0.0001
+    bg_cov: 0.0001
+
+    # 默认扫描末点发布Odometry/TF；激光仍按真实点时间逐点更新。
+    publish_odometry_without_downsample: false
+    publish_tf: true
+    publish_path: true
+    path_max_poses: 10000
+    path_publish_interval: 0.1     # Path最多10Hz发送完整历史，TF/Odom默认为扫描频率。
+    save_pcd: false
+    save_map_resolution: 0.02
+    map_path: maps/ly_lio.pcd       # 相对路径基于进程工作目录，也可填绝对路径。
+
+    # PLIO风格终端面板；独立墙钟定时刷新，断流时仍会更新状态。
+    terminal.enabled: true
+    terminal.clear_screen: true    # 仅交互TTY清屏；重定向/管道自动输出普通文本。
+    terminal.refresh_rate_hz: 10.0 # 与PLIO默认扫描打印频率一致；只影响显示。
+    terminal.stale_timeout: 1.0    # s；有效采样stamp停止推进超过该时长显示STALE。

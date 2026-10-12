@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ly_lio</name>
+  <version>0.0.0</version>
+  <description>基于 Small Point-LIO 优化实现的 ROS 2 逐点激光惯性里程计。</description>
+  <maintainer email="52013141312a@gmail.com">hustlyrm</maintainer>
+  <license>MIT</license>
+  <author email="1709185482@qq.com">Yingjie Huang (Small Point-LIO)</author>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>std_srvs</depend>
+  <depend>yaml_cpp_vendor</depend>
+  <depend>yaml-cpp</depend>
+  <depend>eigen</depend>
+  <depend>libomp-dev</depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

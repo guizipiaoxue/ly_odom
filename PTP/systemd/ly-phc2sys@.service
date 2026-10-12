@@ -1,0 +1,15 @@
+[Unit]
+Description=Synchronize %i PHC from read-only system UTC without stepping
+Requires=ly-ptp4l@%i.service
+After=ly-ptp4l@%i.service
+
+[Service]
+Type=simple
+# -s 是源，-c 是目标。禁止把 CLOCK_REALTIME 设为目标。
+# PHC 已在发布前初始化；-F 0 / -S 0 禁止伺服初始和运行期间阶跃。
+ExecStart=/usr/sbin/phc2sys -s CLOCK_REALTIME -c %i -w -z /run/ly-ptp4l-%i -m -q -x --max_frequency=100000 -S 0.0 -F 0.0
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

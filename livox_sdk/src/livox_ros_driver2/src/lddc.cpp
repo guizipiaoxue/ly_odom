@@ -325,7 +325,8 @@ void Lddc::InitPointcloud2Msg(const StoragePacket& pkg, PointCloud2& cloud, uint
     point.reflectivity = pkg.points[i].intensity;
     point.tag = pkg.points[i].tag;
     point.line = pkg.points[i].line;
-    point.timestamp = static_cast<double>(pkg.points[i].offset_time);
+    // PointXyzlt stores absolute sample time; PointCloud2 exposes relative ns.
+    point.timestamp = static_cast<double>(pkg.points[i].offset_time - pkg.base_time);
     points.push_back(std::move(point));
   }
   cloud.data.resize(pkg.points_num * sizeof(LivoxPointXyzrtlt));
@@ -479,6 +480,8 @@ void Lddc::PublishPclData(const uint8_t index, const uint64_t timestamp, const P
 
 void Lddc::InitImuMsg(const ImuData& imu_data, ImuMsg& imu_msg, uint64_t& timestamp) {
   imu_msg.header.frame_id = "livox_frame";
+  // MID360 reports angular velocity and acceleration, but no orientation.
+  imu_msg.orientation_covariance[0] = -1.0;
 
   timestamp = imu_data.time_stamp;
 #ifdef BUILDING_ROS1

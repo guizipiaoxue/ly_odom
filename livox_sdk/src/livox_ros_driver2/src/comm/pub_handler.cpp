@@ -31,6 +31,18 @@
 
 namespace livox_ros {
 
+namespace {
+// PTP 严格模式：未同步数据直接丢弃，绝不回退到主机收包时间。
+bool RequirePtpSync() {
+  static const bool required = [] {
+    const char* value = std::getenv("LIVOX_REQUIRE_PTP_SYNC");
+    return value && (std::string(value) == "1" || std::string(value) == "true");
+  }();
+  return required;
+}
+
+}  // namespace
+
 std::atomic<bool> PubHandler::is_timestamp_sync_;
 
 PubHandler &pub_handler() {
@@ -102,10 +114,18 @@ void PubHandler::OnLivoxLidarPointCloudCallback(uint32_t handle, const uint8_t d
     return;
   }
 
-  if (data->time_type != kTimestampTypeNoSync) {
-    is_timestamp_sync_.store(true);
-  } else {
-    is_timestamp_sync_.store(false);
+  // 专用启动入口只接配置的雷达，其他设备不应改变全局同步标记。
+  const char* target_ip = std::getenv("LIVOX_TARGET_IP");
+  if (target_ip && IpNumToString(handle) != target_ip) { return; }
+  const bool synchronized = data->time_type != kTimestampTypeNoSync;
+  is_timestamp_sync_.store(synchronized);
+  if (data->time_type != kTimestampTypeGptpOrPtp && RequirePtpSync()) {
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true)) {
+      std::cerr << "LIVOX_REQUIRE_PTP_SYNC=1: discard unsynchronized packet; "
+                   "wait for PTP/gPTP time_type=1" << std::endl;
+    }
+    return;
   }
 
   if (data->data_type == kLivoxLidarImuData) {
@@ -268,10 +288,29 @@ uint64_t PubHandler::GetEthPacketTimestamp(uint8_t timestamp_type, uint8_t* time
 
   if (timestamp_type == kTimestampTypeGptpOrPtp ||
       timestamp_type == kTimestampTypeGps) {
+    // 本机实测 PTP 为 TAI，ROS 使用 UTC；显式配置时差，两路在同一入口转换。
+    // GPS 或未同步回退不应用 PTP 时差；不自动猜测设备时标。
+    if (timestamp_type == kTimestampTypeGptpOrPtp) {
+      static const uint64_t offset_ns = []() -> uint64_t {
+        const char* value = std::getenv("LIVOX_PTP_UTC_OFFSET");
+        if (!value) { return uint64_t{0}; }
+        char* end = nullptr;
+        const long seconds = std::strtol(value, &end, 10);
+        if (end == value || *end != '\0' || seconds < 0 || seconds > 255) {
+          std::cerr << "Invalid LIVOX_PTP_UTC_OFFSET; expected integer 0..255" << std::endl;
+          std::abort();
+        }
+        return static_cast<uint64_t>(seconds) * 1000000000ULL;
+      }();
+      const uint64_t timestamp = static_cast<uint64_t>(time.stamp);
+      if (timestamp < offset_ns) { return 0; }
+      return timestamp - offset_ns;
+    }
     return time.stamp;
   }
 
-  return std::chrono::high_resolution_clock::now().time_since_epoch().count();
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
 /*******************************/

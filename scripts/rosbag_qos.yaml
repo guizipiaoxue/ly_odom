@@ -1,0 +1,33 @@
+# 原始传感器允许 best effort，避免驱动 QoS 不同时无法接收；增加 IMU 队列容量。
+/livox/lidar:
+  history: keep_last
+  depth: 100
+  reliability: best_effort
+  durability: volatile
+/livox/imu:
+  history: keep_last
+  depth: 1000
+  reliability: best_effort
+  durability: volatile
+# 10ms里程计随100ms雷达消息批量到达，录包为窗口输出保留充分接收深度。
+/ly_lio/odometry:
+  history: keep_last
+  depth: 1000
+  reliability: reliable
+  durability: volatile
+/ly_lio/cloud_registered:
+  history: keep_last
+  depth: 1000
+  reliability: reliable
+  durability: volatile
+/tf:
+  history: keep_last
+  depth: 1000
+  reliability: reliable
+  durability: volatile
+# 静态安装变换只在启动时发布；transient_local 能接收发布者缓存的历史数据。
+/tf_static:
+  history: keep_last
+  depth: 100
+  reliability: reliable
+  durability: transient_local

@@ -1,14 +1,50 @@
 # ly_lio 维护说明
 
+- **2026-10-13最新模型要求**：恢复Point-LIO30维状态/P顺序
+  [p,R,R_IL,t_IL,v,omega,a,g,bg,ba]；IMU观测仍6维，Batch保持0.1ms，不融合轮速。
+  extrinsic_est_en=false清零外参P行/列并固定，true恢复12列激光观测、外参注入和双SO(3)reset。
+  MID360的extrinsic_T保存IMU在激光系位置[-.011,-.02329,.04412]m，约定imu_in_lidar；
+  参数边界转换t_IL=-R_IL*c_L，内部始终p_I=R_IL*p_L+t_IL。L2显式lidar_in_imu。
+  在线Batch保留原点/D，后验云/入图点与观测使用同一模型；reset恢复启动标定。
+  固定T_BL安装在线组合T_BI，body pose/twist P含外参交叉项；staticTF是实际T_BL，child为lidar_frame。
+  显式固定T_BI+在线T_IL则发布同stamp动态sensor TF。说明见docs/30维状态恢复与IMU安装外参.md。
+  以下24维/禁止在线分支/芯片原点未标定描述均已被本项替代；历史零漂结果不作为本轮验收。
+  本轮Release构建、924次ESKF数值核对、256组生产机体输出协方差有限差分及三种ROS
+  合成配置通过；108组Odom/TF/注册云stamp一致，TF值差0，reset恢复与SIGINT退出正常。
+  结果见docs/30维数值验证.json、30维外参与机体输出验证.json、30维ROS验证.json。
+  未启动硬件或修改PTP，未测新零漂，临时程序/数据已清理。
+
+- **2026-10-13当前配置**：节点C++直接读取包内config/mid360.yaml，包含算法/IMU/地图/
+  初始化/话题/frame/输出/终端等参数；不再读取根config/ly_odom.yaml（已移除）。
+  Livox参数与SDK JSON在其驱动包，录包配置独立在工作区外config/rosbag.yaml。
+  shell/launch只管理进程，不解析/生成/注入参数；独立ros2 run与组件加载同样读默认YAML。
+  ROS显式参数优先于默认文件。安装外参两消费者直接共用pcl_ws/config/lidar2baselink.yaml。
+  用户选定Batch=.0001s（0.1ms），严格0<duration<.010；L2示例未调参仍2ms。
+  24组搜索最小RMS的5µs不作为默认；采用100µs相对2ms在600秒同源位置RMS降低6.25%，
+  两静止/一旋转回归也小幅改善位置，部分姿态略退化，无新实机采集。
+  配置链及结果见docs/统一参数配置.md、docs/Batch时长调参与零漂.md。
+  四业务包构建与离线直接读取/原生覆盖/组件加载/录包内容及退出检查通过；
+  未启动硬件、未改PTP。指标见docs/分包配置验证.json，不是新零漂测量。
 - 本包是独立 ROS 2 Humble 包；Point-LIO、small_point_lio及外部sentry PLIO为只读参考。
   不从兄弟目录动态引用源码，保留MIT和第三方版权。关键算法、适配和节点逻辑使用中文注释。
 - 首读README、docs/实现对照.md、docs/时间戳与发布频率.md和docs/双雷达与单雷达对比.md。
-- **当前恢复30维Point-LIO输出观测模型与逐点 point→map 激光更新。**
+- **2026-10-12历史：按docs/建模.md实现Batch点到历史地图联合更新和IMU输出观测。**
+  不接轮速；状态和P均为真正24维[p,R,v,omega,a,g,bg,ba]，不保留30维存储空壳。
+  在线外参载体、12列更新、外参误差注入/先验参数已删除；旧extrinsic_est_en=true启动拒绝。
+  384次数值投影比较及738条旧bag输出逐数等价；点距.02候选动态退化，保留默认.05。
+  最新调参和600秒静止测量见docs/24维清理与10分钟零漂.md。
+  213853独立实机预热5s+600s：末端0.6215cm、最大1.1963cm、RMS0.5098cm、姿态0.021623°。
+  6000组Odom/TF/注册云一致，窗内无重建；启动首输出前IMU缺段曾重建一次。
+  转换云全齐，IMU录包旁路少1个配对（119999/119998），不能直接归因为转换漏发。
+  新600s同源回放原.05/候选.02点距末端为0.5609/0.9309cm，仍保留原参数。
+  Batch最长lidar_batch_duration=.002s，遇IMU事件提前分界，同stamp先IMU；统一补偿到
+  实际批末IMU系，冻结先验的omega/R^T v，联合信息更新后只用后验R/p变世界。
+  详见docs/文档模型改进与零漂验证.md。
   相邻10ms平面→平面模型已因静止实机严重发散停用，plane_features/Schmidt克隆不再参与流程。
   旧失败和历史结果见docs/PLIO对比与零漂修复.md，不能宣称它们是当前验证。
-- 按真实时间处理IMU、跟踪点、稠密点、scan_end。每次观测与输出前同步传播P；
+- 按真实时间处理IMU、激光Batch、scan_end；P先于x传播以使用区间起点线性化；
   Q*process_noise_reference_dt*dt默认参考周期.005s，稀疏FPFᵀ保留完整交叉块。
-- 激光用历史地图5近邻PCA平面、点到面标量残差、位置/右扰动姿态雅可比。
+- 激光用历史地图5近邻PCA平面，批内堆叠标量点到面残差，一次联合更新完整状态。
   同扫描后验点到scan_end才入图；每格默认20点、5cm最小间距、7格查询与LRU。
   空间降采样选真实坐标/时间对，不对运动中不同时间点的坐标和时间做均值。
 - 静止IMU窗口估计bg、ba模长偏差和重力方向；清掉标定前扫描后收集至少5帧初图。
@@ -23,13 +59,16 @@
   严格PTP未锁定就丢包，两路统一TAI减37秒。不能用now()、收包时间或均匀5ms网格替换。
   PTP不等于同时采样；静止数据不能标定运动时的物理LiDAR–IMU时延。
 - 默认固定T_IL（lidar→IMU）。统一安装文件给T_BL，推导T_BI=T_BL*inverse(T_IL)，
-  T_WB=T_WI*inverse(T_BI)。在线外参需直接给固定imu_to_body_R/T，不能从在线T_IL推导固定机体关系。
+  T_WB=T_WI*inverse(T_BI)。也可直接给固定imu_to_body_R/T；extrinsic_est_en=true启用在线T_IL。
+  节点通过核心只读状态接口读取当前T_IL，使用固定T_BL时每次发布重新组合T_BI。
   位置、速度、协方差、Path、TF共同核对杆臂；注册点云仍在odom，不重复变换。
 - 默认scan_end发布Odom/TF/注册点云，stamp为距离过滤前最晚有效输入点。
-  publish_odometry_without_downsample=true可逐跟踪点发布Odom/TF，仍按原始消息成批交付。
+  publish_odometry_per_batch=true可按真实批末额外发布Odom/TF，仍按原始消息成批交付。
+  旧publish_odometry_without_downsample=true告警映射为按批；velocity_cov已停用并告警。
+  Q仅omega/a/bg/ba四组，IMU按配置量程95%屏蔽饱和轴。
   当前无独立实时IMU预测输出，不把约10Hz发布误写为10Hz激光更新。
-- 原始frame名相同不能证明lidar/IMU原点重合；内部平移目前缺少设备标定，不能凭其他型号
-  示例正负号盲填。活动云台真实底盘姿态需要动态关节外参；安装文件当前对应云台中心。
+- 原始frame名相同不能证明lidar/IMU原点重合；当前应用用户给出的芯片位置，旋转仍假设同轴。
+  活动云台真实底盘姿态需要动态关节外参；安装文件当前对应云台中心。
 - 算法和reset互斥回调组，save服务独立组使用地图快照；没有回环/绝对位置约束。
 - 统一启动scripts/odom.sh：PTP开机服务仅检查，驱动/转换/里程计/全话题录包一起启动。
   回放用start_lidar:=false record_bag:=false。PTP不随ROS停止或重启。
@@ -39,7 +78,22 @@
 - 用户要求不保留新增测试/回放/监视/分析程序；临时程序在/tmp或stdin运行并清理，
   只保留原始bag、配置、CSV、JSON、图、中文报告。历史测试数字不是本轮验收。
 
-## 本轮验证
+## 本轮Batch模型验证（2026-10-12）
+
+- 后续18组有限调参、24/30维同源及留出比较见docs/调参与30维状态对比.md；
+  候选未稳定泛化，该轮保留原噪声与固定24维。该历史轮用既有bag，未启动硬件；
+  在线30维代码现已按用户要求删除。
+- Release构建、80组联合/稠密Kalman等价、SO(3)/传播/观测雅可比数值核对通过，
+  7项核心时间顺序、空点云、地图冻结、输出与参数流程检查通过。
+- 旧静止bag同源60秒：旧末端0.910cm/最大2.405cm，新1.002/2.382cm，未全面改善。
+- 新独立实机bag odom_20261012_190342_53aa7a1c：首输出后5s预热+60s，600输出，
+  末端0.309cm/最大2.246cm，姿态末端0.01563°。654组Odom/TF/注册云stamp一致。
+- 实机窗内原始/转换IMU12000/12000、云599/599；完整bag的启动发现前缀有计数差。
+- 新bag同源离线旧末端0.237cm→新0.292cm；不能将不同初始化的现场输出当同源旧/新。
+- 本轮模型稳定但不宣称全面改善静止零漂或动态精度；详见新报告和各bag/analysis。
+- 采集已停止，里程计/转换/录包正常退出，驱动已知SIGBUS(-7)仍在；PTP active、PID不变。
+
+## 修改前逐点模型验证（本轮Batch模型见新文档）
 
 - LY Release与转换节点构建通过；同源60秒LY末端0.919cm、最大1.446cm。
 - 默认真实.3启动60秒末端0.906cm、最大2.428cm，姿态末端0.191°。
@@ -64,8 +118,7 @@
   日期按本机时区转换传感器时间，Elapsed也用传感器时间；reset/自动重建后以新有效输出重选B0。
 - 保留等待/静止标定/建图/断流，正常前5个处理扫描为WARMUP，之后为GOOD，异常为CHECK。
   有效stamp超过terminal.stale_timeout=1s未推进显示STALE；重复/回退不能维持GOOD，GOOD不保证精度。
-- scripts/odom.sh和包launch支持terminal_enabled、terminal_clear_screen、terminal_rate覆盖；
-  留空沿用YAML。TTY默认持续清屏，文件/管道无ANSI；clear_screen=false保留其他节点日志。
+- 面板参数直接在config/mid360.yaml的terminal.*设置，或通过原生ROS参数覆盖。TTY默认持续清屏，文件/管道无ANSI；clear_screen=false保留其他节点日志。
   刷新率范围(0,10]Hz，默认10Hz；参数仅启动读取，关闭面板后不创建打印timer。
 - recv/accept为适配后核心接收/成功入队计数，proc不含初始化扫描；适配器提前拒绝不在这些统计内。
   accepted后溢出/过期不撤销接受记录。Cloud reject/pending沿用参考标签，pending实际是累计

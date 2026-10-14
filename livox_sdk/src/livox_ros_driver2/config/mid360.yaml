@@ -1,0 +1,23 @@
+# 驱动C++直接读取；修改本源码YAML并重启生效，launch只负责启动进程。
+# /**使独立可执行程序、重命名节点和组件使用同一参数文件。
+/**:
+  ros__parameters:
+    use_sim_time: false
+    xfer_format: 0               # PointCloud2；保留/livox/lidar与/livox/imu。
+    multi_topic: 0
+    data_src: 0
+    publish_freq: 10.0           # Hz，合法范围[0.5,100]。
+    output_data_type: 0
+    frame_id: livox_frame
+    lvx_file_path: /home/livox/livox_test.lvx
+    cmdline_input_bd_code: livox0000000001
+    # Livox SDK2仅接受JSON路径。直接使用同目录持久JSON，不生成临时配置。
+    # 设备IP、主机接收IP、端口、采样模式和零驱动外参均在该JSON中编辑。
+    # 相对路径以当前YAML文件目录为基准，与启动工作目录无关。
+    user_config_path: MID360_config.json
+    require_ptp_sync: true       # 非PTP/gPTP time_type=1包直接丢弃。
+    ptp_utc_offset: 37           # 当前设备TAI转ROS UTC；UTC固件设0，单位秒。
+    target_ip: 192.168.1.3       # 必须出现在SDK JSON；空字符串允许全部已配置设备。
+    ptp_interface: enp86s0       # 只读检查该网卡IPv4与已有PTP/PHC服务。
+    preflight_check: true        # 实机启动保护；隔离验证可通过ROS参数显式关掉。
+    config_check_only: false     # true仅检查/公布有效参数，不初始化SDK或启动雷达。

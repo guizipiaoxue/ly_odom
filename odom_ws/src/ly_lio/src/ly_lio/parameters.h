@@ -33,13 +33,14 @@ namespace ly_lio {
         double acc_norm;
 
 
-        bool extrinsic_est_en;
         Eigen::Vector3d extrinsic_T;
         Eigen::Matrix3d extrinsic_R;
+        bool extrinsic_est_en = false;
+        double extrinsic_rotation_cov = 0.01;     // rad²，在线外参的初始先验。
+        double extrinsic_translation_cov = 0.01;  // m²，在线外参的初始先验。
 
         double imu_meas_acc_cov;
         double imu_meas_omg_cov;
-        double velocity_cov;
         double omg_cov;
         double acceleration_cov;
         double bg_cov;
@@ -47,7 +48,8 @@ namespace ly_lio {
         double process_noise_reference_dt = 0.005;
         double max_imu_gap = 0.1;  // s，超限/队列截断后重新初始化，禁止跨缺段积分。
 
-        // 单雷达Point-LIO：保留真实点与真实时间，标量点到历史地图平面更新。
+        // 文档Batch模型：保留真实点时间，补偿到批末后联合匹配历史地图。
+        double lidar_batch_duration = 0.0001;  // s = 0.1ms；严格<10ms，遇IMU采样提前结束。
         int point_filter_num = 1;
         bool space_downsample = true;
         double space_downsample_leaf_size = 0.2;
@@ -60,7 +62,7 @@ namespace ly_lio {
         double laser_point_cov = 0.01;
         double plane_threshold = 0.1;
         double match_sqaured = 81.0;
-        bool publish_odometry_without_downsample = false;
+        bool publish_odometry_per_batch = false;
 
         void read_parameters(rclcpp::Node &node);
     };

@@ -1,5 +1,79 @@
 # ly_odom 工作说明
 
+## 当前30维状态与芯片外参（2026-10-13，最新用户要求优先）
+
+- 按用户最新要求恢复Point-LIO的30维状态/P：[p,R,R_IL,t_IL,v,omega,a,g,bg,ba]。
+  30维是状态与误差维度，IMU残差仍6维，单点激光残差1维；Batch模型及0.1ms默认保留。
+- MID360 YAML保留用户提供的IMU芯片在激光系位置extrinsic_T=[-.011,-.02329,.04412]m，
+  显式extrinsic_translation_convention=imu_in_lidar；代码读取时t_IL=-R_IL*extrinsic_T，
+  内部p_I=R_IL*p_L+t_IL。单位旋转时t_IL=[.011,.02329,-.04412]m。
+  L2/未声明约定的参数默认lidar_in_imu，直接使用原Point-LIO平移约定。
+- extrinsic_est_en=false固定外参并清零P对应6行/列；true恢复12列激光联合观测与双SO(3)
+  注入/reset。在线先验extrinsic_rotation_cov/translation_cov在所属YAML，Q外参为零。
+- 在线Batch保留原LiDAR点与冻结补偿D，正确计算外参H；后验地图点/注册云只更新标定部分，
+  不重新运动补偿。重建/reset恢复配置标定。
+- 固定安装T_BL推导的T_BI随当前在线T_IL重算，机体输出P包含外参交叉项。
+  baselink→lidar_frame静态TF严格是T_BL，不能把非零偏移IMU原点标成livox_frame。
+  显式固定T_BI且在线T_IL时按Odom相同stamp发布动态传感器TF。
+- 配置继续分包直接加载，轮速不接入。说明见包内docs/30维状态恢复与IMU安装外参.md。
+  下方24维清理、旧零漂和配置迁移数目均为历史，不能替代本轮30维/非零外参的精度结果。
+- 本轮Release构建、924次ESKF数值核对及256组生产机体输出协方差有限差分通过；
+  三种ROS合成配置共108组Odom/TF/注册云stamp一致，TF值差0，reset恢复及SIGINT退出通过。
+  指标见包内docs/30维数值验证.json、30维外参与机体输出验证.json、30维ROS验证.json。
+  未启动硬件、未改PTP、未测新零漂；临时验证程序与数据已清理。
+
+## 当前分包配置与直接加载（2026-10-13，优先于下方历史）
+
+- 用户要求取消中央合并配置。里程计参数在`odom_ws/src/ly_lio/config/mid360.yaml`，
+  Livox ROS/PTP参数在`livox_sdk/src/livox_ros_driver2/config/mid360.yaml`，SDK直接读取同目录
+  `MID360_config.json`；共享安装外参恢复为`pcl_ws/config/lidar2baselink.yaml`。
+- 录包配置独立放工作区外`config/rosbag.yaml`，业务包`ly_bag_recorder`直接读取它并使用
+  原生rosbag2_transport::Recorder，保留全部/隐藏话题、持续发现、QoS和关闭刷新metadata。
+- 各节点C++直接读取所属默认配置，源码存在时优先读取源码，缺源码用包share。
+  日常修改后重启即可；ROS显式参数/参数文件可覆盖。统一shell/launch仅管理进程，
+  不读取参数YAML，不生成临时YAML/SDK JSON，不向节点注入配置。
+- scripts/odom.sh仅保留start_lidar与record_bag进程开关；旧config/config_path/bag_dir/
+  terminal/PTP launch覆盖不再使用，修改所属文件或独立节点ROS参数。
+  回放`start_lidar:=false record_bag:=false`不启驱动、不查询PTP。
+- 驱动代码在启动SDK前只读检查独立PTP/PHC服务和JSON主机接收IP，绝不操作服务/时钟。
+  Livox网络JSON是上游SDK要求的持久配置，不由脚本从YAML转换。
+- 用户选定Batch **0.1ms=0.0001s**，严格0<duration<.010s；L2未调参仍2ms。
+  24组600秒同源搜索采用100µs相对2ms位置RMS降低6.25%，部分姿态略退化，
+  两静止/一旋转回归也小幅改善位置，无新实机采集。见包内docs/Batch时长调参与零漂.md。
+- 四业务包增量构建与离线配置/录包验证通过：64项LIO、16项驱动、原生ROS覆盖、
+  组件加载、隐藏发现/静态TF、内容保真和SIGINT/SIGTERM写盘；统一入口默认录包与
+  录包单节点退出联动关闭均通过。未启动硬件或改PTP，临时程序/合成bag已清理。
+- 分包加载及使用见odom_ws/src/ly_lio/docs/统一参数配置.md，指标见同目录分包配置验证.json；
+  此前集中配置52项断言只属于历史实现。
+
+## 24维模型历史（2026-10-12，已被文首30维要求替代）
+
+- 当前ly_lio按docs/建模.md改为激光Batch点到历史地图联合更新，不融合轮速。
+- 当前状态与P均压缩为24维[p,R,v,omega,a,g,bg,ba]；在线30维实验代码已按要求删除。
+  激光→IMU外参仅作固定参数，旧extrinsic_est_en=true配置明确启动失败。
+- 清理后的384次数值投影比较及旧bag738条输出逐数等价通过；新一轮地图/采样/初始化
+  15组筛选的点距.02候选在动态复核中退化，仍保留原点距.05和原噪声。
+  最新记录见odom_ws/src/ly_lio/docs/24维清理与10分钟零漂.md。
+- 真24维独立实机bag odom_20261012_213853_3614d9c3，预热5s后完整600s：
+  首末5s均值位置差0.6215cm、最大1.1963cm、RMS0.5098cm，姿态末端0.021623°。
+  窗内6000组Odom/TF/注册云一致，无窗内重建；启动首输出前曾因IMU缺段重建一次。
+  转换云6000/6000，IMU录包旁路119999/119998，少一配对不直接归因转换节点漏发。
+  新bag同源回放原点距.05末端0.5609cm，.02候选0.9309cm，支持保留原参数。
+  采集已停止，PTP active/PID不变；驱动仍已知SIGBUS(-7)，其他节点正常退出。
+- 最长2ms一批，遇IMU观测提前分界；真实批末去畸变，冻结先验后一次联合更新。
+- IMU输出观测保持，饱和阈值95%，Q只含omega/a/bg/ba；先P后x在区间起点线性化。
+- 默认仍扫描末点发布，原始输入、机体输出杆臂和两路转换保留，PTP独立。
+- 参数迁移、保留的工程差异与测试结果见
+  odom_ws/src/ly_lio/docs/文档模型改进与零漂验证.md。
+- 此前Batch模型独立实机bag odom_20261012_190342_53aa7a1c，预热5s后60s：末端0.309cm、
+  最大2.246cm、末端姿态0.01563°；654组Odom/TF/注册云stamp一致，窗内转换链路完整。
+- 两份同源比较均未证明全面降低零漂（旧bag末端0.910→1.002cm，新bag0.237→0.292cm）；
+  不以新实机结果替代同源改进证明。驱动仍有已知SIGBUS，PTP保持active且PID不变。
+- 以下“现行”“当前”标题中的逐点/相邻平面与数值均为既往记录，不是本轮Batch结论。
+- 后续18组有限调参只用旧静止bag筛选，冻结候选后用新静止bag及运动数据验证。
+  候选未稳定泛化，30维也未全面改善；该轮保留24维和原噪声。方法、数据与结果见
+  odom_ws/src/ly_lio/docs/调参与30维状态对比.md；该历史轮使用既有录包，未启动硬件。
+
 ## 工作区与数据流
 
 - ROS 版本：ROS 2 Humble。

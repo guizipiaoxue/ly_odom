@@ -14,7 +14,8 @@ namespace ly_lio {
     struct state {
         using value_type = double;
 
-        // Point-LIO 的 IMU 作为输出观测模型：p,R,R_LI,t_LI,v,omega,a,g,bg,ba。
+        // 恢复Point-LIO输出观测模型的30维误差顺序：p,R,R_IL,t_IL,v,omega,a,g,bg,ba。
+        // R_IL/t_IL将激光坐标转换到IMU坐标；固定模式也保留状态载体，但不估计这6维。
         constexpr static int DIM = 30;
         constexpr static int position_index = 0;
         constexpr static int rotation_index = 3;
@@ -29,8 +30,8 @@ namespace ly_lio {
 
         Eigen::Matrix<value_type, 3, 1> position = Eigen::Matrix<value_type, 3, 1>::Zero();        // 位置
         Eigen::Matrix<value_type, 3, 3> rotation = Eigen::Matrix<value_type, 3, 3>::Identity();    // 旋转
-        Eigen::Matrix<value_type, 3, 3> offset_R_L_I = Eigen::Matrix<value_type, 3, 3>::Identity();// 雷达到 IMU 的 R
-        Eigen::Matrix<value_type, 3, 1> offset_T_L_I = Eigen::Matrix<value_type, 3, 1>::Zero();    // 雷达到 IMU 的 T
+        Eigen::Matrix<value_type, 3, 3> offset_R_L_I = Eigen::Matrix<value_type, 3, 3>::Identity();// 激光到IMU的旋转
+        Eigen::Matrix<value_type, 3, 1> offset_T_L_I = Eigen::Matrix<value_type, 3, 1>::Zero();    // 激光原点在IMU系的位置
         Eigen::Matrix<value_type, 3, 1> velocity = Eigen::Matrix<value_type, 3, 1>::Zero();        // 速度
         Eigen::Matrix<value_type, 3, 1> omg = Eigen::Matrix<value_type, 3, 1>::Zero();             // 角速度
         Eigen::Matrix<value_type, 3, 1> acceleration = Eigen::Matrix<value_type, 3, 1>::Zero();    // 加速度
@@ -58,7 +59,15 @@ namespace ly_lio {
         bool valid = false;
         state::value_type z = 0.0;  // 观测减预测：负的点到地图平面有符号距离。
         Eigen::Matrix<state::value_type, 1, 12> H = Eigen::Matrix<state::value_type, 1, 12>::Zero();
-        state::value_type laser_point_cov = 0.01;
+        state::value_type variance = 0.01;
+    };
+
+    struct batch_measurement_result {
+        size_t matched_points = 0;
+        bool estimate_extrinsics = false;
+        // 全部点共享一次先验和同一batch末时刻；累加[p,theta,theta_IL,t_IL]的信息。
+        Eigen::Matrix<double, 12, 12> information = Eigen::Matrix<double, 12, 12>::Zero();
+        Eigen::Matrix<double, 12, 1> information_vector = Eigen::Matrix<double, 12, 1>::Zero();
     };
 
     struct imu_measurement_result {
@@ -70,7 +79,6 @@ namespace ly_lio {
 
     class eskf {
     public:
-        using measurement_model_point = std::function<void(const state &, point_measurement_result &)>;
         using measurement_model_imu = std::function<void(const state &, imu_measurement_result &)>;
         state x;
         Eigen::Matrix<double, state::DIM, state::DIM> P = Eigen::Matrix<double, state::DIM, state::DIM>::Identity();
@@ -78,15 +86,13 @@ namespace ly_lio {
     private:
         double time_predict_state_last = 0.0;
         double time_predict_cov_last = 0.0;
-        measurement_model_point h_point;
         measurement_model_imu h_imu;
 
         inline bool inject_error(
             const Eigen::Matrix<double, state::DIM, 1> &delta,
             const Eigen::Matrix<double, state::DIM, state::DIM> &posterior) {
             if (!delta.allFinite() || !posterior.allFinite()) { return false; }
-            // 名义R采用右扰动注入；注入后的误差切空间改变，P两侧须同时reset。
-            // 在线旋转外参使用相同规则，固定外参的delta为零。
+            // 名义R和R_IL均采用右扰动注入；两个SO(3)切空间及全部交叉块须两侧reset。
             const Eigen::Matrix3d J_rotation = A_matrix<double>(-delta.template segment<3>(state::rotation_index));
             const Eigen::Matrix3d J_extrinsic = A_matrix<double>(-delta.template segment<3>(state::offset_R_L_I_index));
             auto left = posterior.eval();
@@ -101,10 +107,33 @@ namespace ly_lio {
             return true;
         }
 
+        template <int ObservationDimension>
+        inline bool update_lidar_information(const batch_measurement_result &measurement) {
+            using observation_matrix = Eigen::Matrix<double, ObservationDimension, ObservationDimension>;
+            const observation_matrix observed_covariance = P.template topLeftCorner<ObservationDimension, ObservationDimension>();
+            Eigen::LLT<observation_matrix> prior_factor(observed_covariance);
+            if (prior_factor.info() != Eigen::Success) { return false; }
+            const observation_matrix L = prior_factor.matrixL();
+            const observation_matrix information = measurement.information.template topLeftCorner<ObservationDimension, ObservationDimension>();
+            // 场景可能只有一个平面，Λ可秩亏；I+LᵀΛL仍正定，不逆Λ或完整P。
+            const observation_matrix scaled_information = L.transpose() * information * L;
+            const observation_matrix information_system = observation_matrix::Identity() + scaled_information;
+            Eigen::LDLT<observation_matrix> factor(information_system);
+            if (factor.info() != Eigen::Success || !factor.isPositive()) { return false; }
+            const Eigen::Matrix<double, state::DIM, ObservationDimension> cross_whitened =
+                L.template triangularView<Eigen::Lower>().solve(P.template leftCols<ObservationDimension>().transpose()).transpose();
+            const Eigen::Matrix<double, state::DIM, 1> delta = cross_whitened *
+                factor.solve((L.transpose() * measurement.information_vector.template head<ObservationDimension>()).eval());
+            const observation_matrix reduction = factor.solve(scaled_information);
+            const Eigen::Matrix<double, state::DIM, state::DIM> posterior =
+                P - cross_whitened * reduction * cross_whitened.transpose();
+            // 整个batch只在这里一次注入并reset；不在逐点累加信息时改变名义状态。
+            return inject_error(delta, posterior);
+        }
+
     public:
         eskf() = default;
-        inline void init(const measurement_model_point &point_model, const measurement_model_imu &imu_model) {
-            h_point = point_model;
+        inline void init(const measurement_model_imu &imu_model) {
             h_imu = imu_model;
         }
         inline void init_timestamp(double timestamp) {
@@ -112,7 +141,7 @@ namespace ly_lio {
             time_predict_state_last = time_predict_cov_last = timestamp;
         }
 
-        // 状态在每个点时间预测；每次观测和发布前把协方差推进到同一时刻。
+        // 在IMU、batch末端和scan_end推进状态；先用区间起点状态传播P，再推进名义状态。
         inline void predict_state(double timestamp) {
             auto dt_state = static_cast<state::value_type>(timestamp - time_predict_state_last);
             if (dt_state > 0) [[likely]] {
@@ -159,22 +188,15 @@ namespace ly_lio {
             }
         }
 
-        // Point-LIO逐点点到面观测：每次只求一个标量创新，完整30维交叉协方差
-        // 仍使位置/姿态观测间接修正速度、比力及IMU零偏；不是逐帧ICP。
-        inline bool update_point() {
-            if (!h_point || !P.allFinite()) { return false; }
-            point_measurement_result measurement;
-            h_point(x, measurement);
-            if (!measurement.valid || !measurement.H.allFinite() || !std::isfinite(measurement.z) ||
-                !std::isfinite(measurement.laser_point_cov) || measurement.laser_point_cov <= 0) { return false; }
-            const Eigen::Matrix<double, state::DIM, 1> PHT =
-                P.template leftCols<12>() * measurement.H.transpose();
-            const double innovation = (measurement.H * PHT.template head<12>())(0) + measurement.laser_point_cov;
-            if (!std::isfinite(innovation) || innovation <= 0) { return false; }
-            const Eigen::Matrix<double, state::DIM, 1> K = PHT / innovation;
-            // 最优标量增益下的Joseph式可化为P-PHT*PHTᵀ/S，避免30x30稠密乘法。
-            const Eigen::Matrix<double, state::DIM, state::DIM> posterior = P - K * PHT.transpose();
-            return inject_error(K * measurement.z, posterior);
+        // 与把全部点的H/r按行堆叠后执行一次Kalman更新等价；完整30维交叉协方差
+        // 将激光信息传给速度、比力、重力和IMU零偏，在线模式同时更新激光外参。
+        inline bool update_lidar_batch(const batch_measurement_result &measurement) {
+            if (!measurement.matched_points || !P.allFinite() || !measurement.information.allFinite() ||
+                !measurement.information_vector.allFinite()) { return false; }
+            // 固定模式的外参P行列为零，不能对其12维半正定子块做LLT。
+            // 选择6维系统保留原固定模型的数值路径，状态和P本身始终为30维。
+            return measurement.estimate_extrinsics ? update_lidar_information<12>(measurement) :
+                update_lidar_information<6>(measurement);
         }
 
         inline bool update_imu() {

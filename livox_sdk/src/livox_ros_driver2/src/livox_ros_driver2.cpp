@@ -33,6 +33,13 @@
 #include "driver_node.h"
 #include "lddc.h"
 #include "lds_lidar.h"
+#include "comm/pub_handler.h"
+
+#ifdef BUILDING_ROS2
+#include "driver_config.h"
+#include <cmath>
+#include <stdexcept>
+#endif
 
 using namespace livox_ros;
 
@@ -120,38 +127,38 @@ DriverNode::DriverNode(const rclcpp::NodeOptions & node_options)
 {
   DRIVER_INFO(*this, "Livox Ros Driver2 Version: %s", LIVOX_ROS_DRIVER2_VERSION_STRING);
 
-  /** Init default system parameter */
-  int xfer_format = kPointCloud2Msg;
-  int multi_topic = 0;
-  int data_src = kSourceRawLidar;
-  double publish_freq = 10.0; /* Hz */
-  int output_type = kOutputToRos;
-  std::string frame_id;
-
-  this->declare_parameter("xfer_format", xfer_format);
-  this->declare_parameter("multi_topic", 0);
-  this->declare_parameter("data_src", data_src);
-  this->declare_parameter("publish_freq", 10.0);
-  this->declare_parameter("output_data_type", output_type);
-  this->declare_parameter("frame_id", "frame_default");
-  this->declare_parameter("user_config_path", "path_default");
-  this->declare_parameter("cmdline_input_bd_code", "000000000000001");
-  this->declare_parameter("lvx_file_path", "/home/livox/livox_test.lvx");
-
-  this->get_parameter("xfer_format", xfer_format);
-  this->get_parameter("multi_topic", multi_topic);
-  this->get_parameter("data_src", data_src);
-  this->get_parameter("publish_freq", publish_freq);
-  this->get_parameter("output_data_type", output_type);
-  this->get_parameter("frame_id", frame_id);
-
-  if (publish_freq > 100.0) {
-    publish_freq = 100.0;
-  } else if (publish_freq < 0.5) {
-    publish_freq = 0.5;
-  } else {
-    publish_freq = publish_freq;
+  // ROS原生参数文件由业务节点读取，launch不再搬运参数或注入环境变量。
+  const std::string parameter_file = LoadDriverParameters(*this);
+  const int xfer_format = this->get_parameter("xfer_format").as_int();
+  const int multi_topic = this->get_parameter("multi_topic").as_int();
+  const int data_src = this->get_parameter("data_src").as_int();
+  const double publish_freq = this->get_parameter("publish_freq").as_double();
+  const int output_type = this->get_parameter("output_data_type").as_int();
+  std::string frame_id = this->get_parameter("frame_id").as_string();
+  const bool require_ptp_sync = this->get_parameter("require_ptp_sync").as_bool();
+  const int64_t utc_offset = this->get_parameter("ptp_utc_offset").as_int();
+  const std::string target_ip = this->get_parameter("target_ip").as_string();
+  const std::string interface = this->get_parameter("ptp_interface").as_string();
+  const bool preflight_check = this->get_parameter("preflight_check").as_bool();
+  const bool config_check_only = this->get_parameter("config_check_only").as_bool();
+  const std::string user_config_path = ResolveSdkConfigPath(
+      parameter_file, this->get_parameter("user_config_path").as_string());
+  if (!std::isfinite(publish_freq) || publish_freq < 0.5 || publish_freq > 100.0 ||
+      xfer_format < 0 || xfer_format > 2 || multi_topic < 0 || multi_topic > 1 ||
+      data_src != kSourceRawLidar || output_type != kOutputToRos || frame_id.empty() ||
+      utc_offset < 0 || utc_offset > 255) {
+    throw std::runtime_error("Livox参数无效：频率、消息格式、数据源、frame或UTC偏移超范围");
   }
+  CheckDriverConfiguration(user_config_path, target_ip, interface, require_ptp_sync,
+                           preflight_check && !config_check_only);
+  DRIVER_INFO(*this, "SDK JSON: %s; target_ip=%s; require_ptp_sync=%d; UTC offset=%ld s",
+              user_config_path.c_str(), target_ip.c_str(), require_ptp_sync, utc_offset);
+  if (config_check_only) {
+    DRIVER_INFO(*this, "配置检查完成；未初始化SDK，未启动雷达或硬件线程。");
+    return;
+  }
+  pub_handler().SetTimeSyncConfig(require_ptp_sync,
+      static_cast<uint64_t>(utc_offset) * 1000000000ULL, target_ip);
 
   future_ = exit_signal_.get_future();
 
@@ -162,8 +169,6 @@ DriverNode::DriverNode(const rclcpp::NodeOptions & node_options)
   if (data_src == kSourceRawLidar) {
     DRIVER_INFO(*this, "Data Source is raw lidar.");
 
-    std::string user_config_path;
-    this->get_parameter("user_config_path", user_config_path);
     DRIVER_INFO(*this, "Config file : %s", user_config_path.c_str());
 
     std::string cmdline_bd_code;
@@ -175,7 +180,7 @@ DriverNode::DriverNode(const rclcpp::NodeOptions & node_options)
     if ((read_lidar->InitLdsLidar(user_config_path))) {
       DRIVER_INFO(*this, "Init lds lidar success!");
     } else {
-      DRIVER_ERROR(*this, "Init lds lidar fail!");
+      throw std::runtime_error("Init lds lidar failed: " + user_config_path);
     }
   } else {
     DRIVER_ERROR(*this, "Invalid data src (%d), please check the launch file", data_src);
@@ -212,24 +217,3 @@ void DriverNode::ImuDataPollThread()
     status = future_.wait_for(std::chrono::microseconds(0));
   } while (status == std::future_status::timeout);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

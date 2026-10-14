@@ -1,6 +1,10 @@
+# MID360 里程计配置：节点/组件直接用 ROS 原生 YAML 解析器读取；重启生效。
+# 优先读工作区源码文件，独立安装时回退到包 share/config；与启动目录无关。
+# 显式 --params-file、-p 和组件 NodeOptions 参数仍按 ROS 优先级覆盖此处默认值。
 # 输入原始传感器数据；安装外参仅用于输出位姿，不预先平移 IMU 测量原点。
 ly_lio:
   ros__parameters:
+    use_sim_time: false
     lidar_topic: /livox/lidar
     imu_topic: /livox/imu
     lidar_type: livox_pointcloud2
@@ -8,29 +12,31 @@ ly_lio:
     imu_frame: livox_frame
     body_frame: baselink
     odom_frame: odom
-    # scripts/odom.sh 传入 body_extrinsic_path，读取 pcl_ws/config/lidar2baselink.yaml。
-    # 独立 launch 时传 body_config_path:=该文件绝对路径。
+    # 直接读取两个工作区共享的安装文件；优先源码 pcl_ws/config，再回退到包 share。
+    # 也可填绝对路径；直接配置 imu_to_body_R/T 时须显式将本项设为空字符串。
+    body_extrinsic_path: package://pcl_publisher/config/lidar2baselink.yaml
     publish_sensor_tf: true         # baselink→livox_frame 固定安装 TF。
     # 当前 Livox 驱动的 FLOAT64 timestamp 是相对 header.stamp 的纳秒偏移。
     timestamp_mode: relative
     timestamp_scale: 1.0e-9
-    # 逐点 Point-LIO：保留真实测量点及其时间，匹配历史地图中的局部平面。
+    # 文档Batch模型：真实点补偿到批末，联合匹配历史地图平面；不跨IMU事件。
+    lidar_batch_duration: 0.0001  # s = 0.1ms；用户选定，合法范围0<时长<10ms。
     point_filter_num: 1
     space_downsample: true
     space_downsample_leaf_size: 0.20
     map_resolution: 0.20
     map_capacity: 1000000
-    map_max_points_per_voxel: 20
+    map_max_points_per_voxel: 32
     map_min_point_distance: 0.05
     # 静止标定完成后再收集5帧建立初始地图；不使用标定前的扫描。
     init_map_size: 100
     init_map_scans: 5
-    laser_point_cov: 0.01
+    laser_point_cov: 0.01         # m²；各向同性三维点噪声投影到平面残差。
     plane_threshold: 0.10
     match_sqaured: 81.0
 
     min_distance: 0.5
-    max_distance: 100.0
+    max_distance: 50.0
     max_buffer_points: 2000000
     max_buffer_imu: 20000
     max_imu_gap: 0.1               # s；断流/溢出则重建odom，禁止跨缺失IMU区间积分。
@@ -43,29 +49,33 @@ ly_lio:
     init_max_gyro_std: 0.02          # rad/s，三轴标准差最大值。
     init_max_accel_std: 0.30         # m/s²，内部先转换SI单位再判断。
     init_max_gravity_error: 0.75     # m/s²，平均加速度模长与重力的差。
-    check_satu: true
+    check_satu: true                # 达到下面配置量程的95%即屏蔽对应轴。
     satu_acc: 3.0                   # 输入原始单位 g；SI 数据应改为设备阈值 m/s²。
     satu_gyro: 35.0                 # rad/s
     acc_norm: 1.0                  # 静止加速度模长；若输入 m/s²，则设为 9.81。
 
-    extrinsic_est_en: false
-    # 此处只描述 lidar→IMU；沿用当前 MID360 雷达/IMU 同源参考系假设。
-    extrinsic_T: [0.0, 0.0, 0.0]
+    # 30维Point-LIO状态。T填IMU芯片原点在激光系的位置（m），保留用户测量原值。
+    # 内部使用p_I=R_IL*p_L+t_IL，读取时t_IL=-R_IL*extrinsic_T，不能重复取反。
+    extrinsic_translation_convention: imu_in_lidar
+    extrinsic_T: [-0.011, -0.02329, 0.04412]
+    # R始终将激光测量轴旋转到IMU测量轴，与上述T的位置约定无关。
     extrinsic_R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    extrinsic_est_en: false         # false固定标定；true联合估计6维外参，状态/P始终30维。
+    extrinsic_rotation_cov: 0.01    # rad²；仅在线模式的初始旋转先验，非过程噪声。
+    extrinsic_translation_cov: 0.01 # m²；仅在线模式的初始平移先验。
 
     # R：IMU观测噪声；激光点到地图平面噪声见 laser_point_cov。
     imu_meas_acc_cov: 0.01
     imu_meas_omg_cov: 0.01
     # Q：沿用原200Hz IMU的数值，以Q*参考周期转换方差率，再乘实际传播时长。
     process_noise_reference_dt: 0.005 # s；不随激光点时间分段改变累计噪声。
-    velocity_cov: 20.0
     acceleration_cov: 500.0
     omg_cov: 1000.0
     ba_cov: 0.0001
     bg_cov: 0.0001
 
-    # 默认扫描末点发布Odometry/TF；激光仍按真实点时间逐点更新。
-    publish_odometry_without_downsample: false
+    # 默认扫描末点发布Odometry/TF；true则额外按实际批末时间发布。
+    publish_odometry_per_batch: false
     publish_tf: true
     publish_path: true
     path_max_poses: 10000

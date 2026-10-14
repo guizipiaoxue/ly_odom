@@ -1,19 +1,29 @@
 # ly_lio
 
-基于 Small Point-LIO / Point-LIO 的独立 ROS 2 激光惯性里程计。当前恢复
-**30 维 IMU 输出观测模型与逐点 point→map 激光更新**，关键算法含中文注释。
-之前的相邻 10 ms 平面匹配方案在静止实机中发散，已退出业务流程。
+基于 Small Point-LIO / Point-LIO 的独立 ROS 2 激光惯性里程计。当前按
+[建模.md](docs/建模.md)采用**激光Batch联合更新与IMU输出观测模型**，不接轮速。
+按最新要求恢复Point-LIO的30维状态与协方差：`[p,R,R_IL,t_IL,v,omega,a,g,bg,ba]`。
+IMU观测仍为6维；`extrinsic_est_en=false`固定标定，`true`联合估计6维外参。
+本轮恢复及芯片安装位置说明见[30维状态与外参](docs/30维状态恢复与IMU安装外参.md)。
+此前调参与长时间实测见[24维清理与10分钟零漂](docs/24维清理与10分钟零漂.md)，属于旧配置结果。
+里程计参数修改包内[config/mid360.yaml](config/mid360.yaml)，由节点代码直接读取；重启
+`./scripts/odom.sh`生效，无需重新编译。当前Batch采用用户选定的**0.1ms**，
+配置单位秒：`lidar_batch_duration: 0.0001`，严格小于10ms。
+各组件配置位置及直接加载说明见[参数配置](docs/统一参数配置.md)，
+搜索和跨录包结果见[Batch时长调参与零漂](docs/Batch时长调参与零漂.md)。
 
-静止 IMU 标定完成后收集初始地图；跟踪时按照每个点的真实时间预测状态，交织 IMU
-观测，并用历史地图的局部 PCA 平面修正当前位置和姿态。采用多点体素 LRU 地图、
-保留真实坐标/时间对的空间降采样、IMU 饱和轴屏蔽和完整协方差传播。
-同一扫描的后验点在扫描结束后统一入图，避免用本帧点给自己提供历史约束。
-默认每帧末点发布一次 Odometry/TF，更新频率与发布频率分别控制。
-标准 PointCloud2 模式不依赖 PCL 或 IKFoM。
+静止标定后建立初图；激光按真实采样时间组成最长0.1ms的Batch，遇IMU观测提前分界。
+批内点统一补偿到实际批末，查询历史地图PCA平面，在同一先验上联合更新一次。
+IMU按自身时刻观测，使用95%饱和屏蔽。整扫描后验点在scan_end统一入图。
+保留真点空间采样、多点体素LRU地图、完整交叉协方差与SO(3)误差重置。
+默认每扫描末点发布Odom/TF；`publish_odometry_per_batch=true`可额外按批输出。
+标准PointCloud2不依赖PCL或IKFoM。实现与验证见
+[文档模型改进与零漂验证](docs/文档模型改进与零漂验证.md)。
 
 默认直接订阅 `/livox/lidar` 和 `/livox/imu`，状态原点为 IMU，测量轴为
-`imu_frame=livox_frame`。`extrinsic_R/T` 只描述 lidar→IMU，当前 MID360 沿用雷达与
-IMU 同源参考系的单位外参假设。安装外参只用于输出 baselink 位姿，保留
+`imu_frame=livox_frame`仍匹配原始驱动的测量轴标签。MID360的`extrinsic_T`保存激光系下
+IMU芯片位置`[-0.011,-0.02329,0.04412]`m，按显式约定换算为内部lidar→IMU平移。
+安装外参只用于输出 baselink 位姿，保留
 `pcl_publisher` 发布的 `/bashlink/pcl` 与 `/baselink/imu` 给其他使用者。发布：
 
 | 接口 | 类型 / 作用 |
@@ -29,20 +39,21 @@ IMU 同源参考系的单位外参假设。安装外参只用于输出 baselink 
 ```bash
 source /opt/ros/humble/setup.bash
 cd /home/hustlyrm/ly_odom/odom_ws
-colcon build --packages-select ly_lio --parallel-workers 1 --symlink-install
+colcon build --packages-select ly_lio ly_bag_recorder --parallel-workers 1 --symlink-install
 source install/setup.bash
-ros2 launch ly_lio ly_lio.launch.py \
-  body_config_path:=/home/hustlyrm/ly_odom/pcl_ws/config/lidar2baselink.yaml
+ros2 run ly_lio ly_lio_node
 ```
 
-也可在仓库根目录执行 `./scripts/odom.sh`，统一启动 MID360 驱动、转换节点和里程计，读取同一份
-源码安装外参。PTP 由 systemd 开机自启，启动入口只检查其状态；Ctrl+C 仅关闭 ROS 节点。
+也可在仓库根目录执行 `./scripts/odom.sh`，统一启动MID360驱动、转换节点、里程计和独立录包节点。
+各节点代码直接读取所属配置，安装外参共享`pcl_ws/config/lidar2baselink.yaml`。
+PTP由systemd开机自启，驱动仅作只读检查；Ctrl+C仅关闭ROS节点。
 默认同时将当前 ROS 域全部话题录制到仓库 `bags/odom_日期_时间_随机后缀/`，包括
-原始输入、转换输出、里程计、注册点云、Path 与 TF。用 `bag_dir:=/目录` 更改录包父目录，
-`record_bag:=false` 关闭录包。Ctrl+C 后等待 rosbag 写盘与 metadata 保存完成。
+原始输入、转换输出、里程计、注册点云、Path 与 TF。修改工作区外`config/rosbag.yaml`更改录制与QoS选项，
+`record_bag:=false`关闭录包。Ctrl+C 后等待 rosbag 写盘与 metadata 保存完成。
 回放原始 rosbag 或使用外部驱动时用 `./scripts/odom.sh start_lidar:=false`，跳过驱动
 及 PTP 检查；普通回放可再加 `record_bag:=false`。里程计不依赖转换节点的输出。
-配置位于 `config/mid360.yaml`；默认静止收集
+日常算法配置位于包内`config/mid360.yaml`，直接运行节点和统一启动使用相同默认配置。
+默认静止收集
 200 个 IMU 样本，`acc_norm=1.0` 对应 Livox 原始加速度单位 g。
 初始化同时估计重力方向、陀螺零偏与加速度模长零偏，运动窗口等待后续静止。
 门限使用 SI 单位；单姿态不能完成加速度计全轴标定，启动时仍须保持设备静止。
@@ -62,28 +73,38 @@ ros2 topic echo /ly_lio/odometry --once
 ```
 
 静止零漂、真实数据集精度、极端运动和速度倍数需用实机或同步 rosbag 评估。
-本轮同源静止60秒末端0.92cm、默认启动独立实机0.91cm；完整口径与限制见
+此前24维独立实机预热5秒后连续测量600秒：首末5秒均值位置差0.6215cm、
+最大1.1963cm、RMS0.5098cm，末端姿态变化0.021623°。15组调参后的候选跨场景退化，
+仍保留原数值参数；降维与原固定外参模式数学等价，详见[10分钟验证](docs/24维清理与10分钟零漂.md)。
+此前Batch独立实机60秒末端0.309cm、最大2.246cm；两份同源对比没有证明全面降低零漂，
+详见[模型改进验证](docs/文档模型改进与零漂验证.md)。
+修改前逐点模型同源静止60秒末端0.92cm、独立实机0.91cm；历史口径与限制见
 [双雷达与单雷达对比](docs/双雷达与单雷达对比.md)。
 Point-LIO 的备用 24 维 IMU 输入滤波路径不在本包中。
 来源及许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## IMU 状态与机体输出
 
-外参方向：`extrinsic_R/T` 为 T_IL（lidar→IMU），安装文件的
+内部外参方向为`p_I=R_IL*p_L+t_IL`。`extrinsic_R`始终为R_IL；
+`extrinsic_translation_convention=imu_in_lidar`时，`extrinsic_T`是IMU原点在激光系的位置c_L，
+读取时`t_IL=-R_IL*c_L`；`lidar_in_imu`时直接使用原Point-LIO的t_IL。
+安装文件的
 `lidar_to_gimbal_rotation/translation` 当前作为 T_BL（lidar→baselink）读取。
 节点推导 T_BI = T_BL × inverse(T_IL)，发布 T_WB = T_WI × inverse(T_BI)。
-默认固定 lidar→IMU 外参；也可用 `imu_to_body_R`（行优先
-9 元数组）、`imu_to_body_T`（3 元数组）直接给出 T_BI。使用安装文件推导 IMU→机体时必须固定激光外参；在线外参需直接给定 IMU→机体安装关系。
+在线模式随当前R_IL/t_IL重新组合机体关系，并将外参协方差及交叉项传到输出。
+也可用 `imu_to_body_R`（行优先9元数组）、`imu_to_body_T`（3元数组）直接给出固定T_BI。
+`extrinsic_rotation_cov`和`extrinsic_translation_cov`仅控制在线模式的初始先验。
 两种安装外参来源互斥。IMU 与输出帧不同却未配置安装外参时，启动明确报错。
 
 基座原点在 IMU 中为 r_IB，世界系基座速度为 v_WB = v_WI + R_WI(omega_I × r_IB)。
-位姿与 twist 协方差由完整 30 维 P 及输出雅可比计算，包括杆臂和姿态关联项。
+位姿与 twist 协方差由完整30维P及输出雅可比计算，包括杆臂和姿态关联项。
 地图、注册点云保持滤波器建立的 odom 坐标，Path 则记录输出 baselink 位姿。
 默认 odom 原点仍为初始化 IMU 原点，故 baselink 的初始位置可非零，朝向可非单位旋转。
 
 固定 TF 使用 `publish_sensor_tf` 控制；已有机器人状态发布器管理该安装关系时设为 false，
-避免多个发布者。雷达与 IMU 使用不同帧名时，此节点只自动发布 baselink→imu_frame，
-另行提供 IMU→lidar 的 TF；两者的标定仍由 extrinsic_R/T 供滤波使用。
+避免多个发布者。此节点发布的是baselink→lidar_frame，不能把非零偏移的IMU原点
+标成激光原点。默认固定T_BL仍发静态TF；显式固定T_BI且在线估计T_IL时，改发同stamp动态传感器TF。
+如需独立真实IMU坐标系，可另行发布不同名称的TF，原始驱动frame_id无需改名。
 
 现有安装文件键名指向 gimbal，项目仍按该目标就是 baselink 的约定使用；若实际是活动云台，
 应另外建立 gimbal_link 并使用实时云台角度，固定安装模型仅适用于刚性连接。
@@ -97,13 +118,12 @@ Point-LIO 的备用 24 维 IMU 输入滤波路径不在本包中。
 点云计数、健康状态、机体运动状态、距离、配准/时间、耗时和进程资源。
 
 ```bash
-./scripts/odom.sh terminal_enabled:=false
-./scripts/odom.sh terminal_clear_screen:=false terminal_rate:=1.0
+ros2 run ly_lio ly_lio_node --ros-args -p terminal.enabled:=false
+# 日常统一启动时修改config/mid360.yaml中的terminal.*参数。
 ```
 
 默认只在交互TTY清屏，文件和管道自动输出普通文本；不清屏模式保留同一终端的驱动、录包日志。
-统一脚本和独立launch均支持 `terminal_enabled`、`terminal_clear_screen`、`terminal_rate`，
-留空沿用YAML。直接 `ros2 run` 使用ROS参数 `terminal.enabled`、`terminal.clear_screen`、
+统一启动直接读取包内YAML的终端参数。直接 `ros2 run` 使用ROS参数 `terminal.enabled`、`terminal.clear_screen`、
 `terminal.refresh_rate_hz`，刷新率允许(0,10]Hz，默认10Hz；`terminal.stale_timeout`默认1秒。
 这些参数仅在启动时读取，关闭面板后不创建打印定时器。
 
@@ -141,8 +161,8 @@ GOOD不保证定位精度。有效时间戳超过 `terminal.stale_timeout` 不�
   不计入proc。因此三项差值不能直接当作网络丢包数。
 - Cloud reject/pending沿用参考标签，reject为核心拒绝数，pending实际表示累计缓冲溢出
   丢帧数，不是当前队列长度。DDS message drops显示 `n/a`，表示尚未计量DDS丢包。
-- Input是适配后、核心过滤前的点数，tracked是实际调用激光更新次数，Registration matches
-  是激光更新返回成功次数；Point Time相对当前输出时刻，IMU lead是最新IMU到扫描末点的时间差。
+- Input是适配后、核心过滤前的点数，tracked是实际参与激光关联的点数，Registration matches
+  是成功进入联合更新的匹配点数；Point Time相对当前输出时刻，IMU lead是最新IMU到扫描末点的时间差。
 - Computation Time包含核心扫描处理、地图插入和同步输出，不含适配/预处理；Avg/Max按当前
   初始化周期统计。CPU Load沿用参考PLIO定义，以全机逻辑核总容量为100%，Cores Utilized
   给等效占用核数；CPU Avg为最近100次刷新均值。RAM Allocation是进程驻留内存，MB按十进制

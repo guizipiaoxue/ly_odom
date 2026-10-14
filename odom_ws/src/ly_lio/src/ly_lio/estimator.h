@@ -13,6 +13,13 @@
 
 namespace ly_lio {
 
+    // 运动补偿冻结在同一批末先验；保留原LiDAR点及旋转，计算外参的真实导数。
+    struct DeskewedPoint {
+        Eigen::Vector3d point_imu = Eigen::Vector3d::Zero();
+        Eigen::Vector3d point_lidar = Eigen::Vector3d::Zero();
+        Eigen::Matrix3d rotation_to_end = Eigen::Matrix3d::Identity();
+    };
+
     class Estimator {
     public:
         // 滤波状态及共享参数
@@ -20,9 +27,9 @@ namespace ly_lio {
         eskf kf;
         // 激光观测只查询前面完整扫描构成的历史地图，当前扫描后验点在scan_end入图。
         std::shared_ptr<VoxelMap> ivox;
-        Eigen::Vector3f point_lidar_frame = Eigen::Vector3f::Zero();
         std::vector<Eigen::Vector3f> nearest_points;
-        // lidar→IMU外参：固定模式从参数取值，在线模式使用30维状态中的外参。
+        // 启动/重建使用的lidar→IMU外参；当前外参同时保存在30维滤波状态中。
+        // extrinsic_est_en=false时对应状态与协方差冻结，true时由激光联合更新。
         Eigen::Vector3d Lidar_T_wrt_IMU = Eigen::Vector3d::Zero();
         Eigen::Matrix3d Lidar_R_wrt_IMU = Eigen::Matrix3d::Identity();
         // IMU 观测：原始测量与加速度单位缩放
@@ -36,9 +43,15 @@ namespace ly_lio {
 
         [[nodiscard]] Eigen::Matrix<state::value_type, state::DIM, state::DIM> process_noise_cov() const;
 
-        void h_point(const state &s, point_measurement_result &measurement_result);
+        // 点必须用同一先验补偿到batch末端IMU系；返回成功联合更新的匹配点数。
+        // 在线外参雅可比保留原点与补偿旋转，不能把补偿后的点视为原LiDAR点。
+        size_t update_lidar_batch(const std::vector<DeskewedPoint> &points);
 
         void h_imu(const state &s, imu_measurement_result &measurement_result);
+
+    private:
+        void h_point(const state &s, const DeskewedPoint &point,
+                     point_measurement_result &measurement_result);
     };
 
 }// namespace ly_lio

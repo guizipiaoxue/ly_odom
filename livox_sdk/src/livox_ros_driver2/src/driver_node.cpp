@@ -32,10 +32,15 @@ DriverNode& DriverNode::GetNode() noexcept {
 }
 
 DriverNode::~DriverNode() {
-  lddc_ptr_->lds_->RequestExit();
-  exit_signal_.set_value();
-  pointclouddata_poll_thread_->join();
-  imudata_poll_thread_->join();
+  // config_check_only模式不创建SDK、分发器或线程，同样可以正常关闭。
+  if (lddc_ptr_ && lddc_ptr_->lds_) { lddc_ptr_->lds_->RequestExit(); }
+  if (future_.valid()) { exit_signal_.set_value(); }
+  if (pointclouddata_poll_thread_ && pointclouddata_poll_thread_->joinable()) {
+    pointclouddata_poll_thread_->join();
+  }
+  if (imudata_poll_thread_ && imudata_poll_thread_->joinable()) {
+    imudata_poll_thread_->join();
+  }
 }
 
 } // namespace livox_ros

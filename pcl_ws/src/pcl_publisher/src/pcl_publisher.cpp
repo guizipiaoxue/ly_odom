@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -21,16 +22,36 @@
 #include <sensor_msgs/msg/point_field.hpp>
 #include <yaml-cpp/yaml.h>
 
+namespace {
+std::string default_extrinsics()
+{
+  const auto share = std::filesystem::path(
+    ament_index_cpp::get_package_share_directory("pcl_publisher"));
+  for (auto ancestor = share; !ancestor.empty();) {
+    for (const auto & relative : {"config/lidar2baselink.yaml", "pcl_ws/config/lidar2baselink.yaml"}) {
+      const auto candidate = ancestor / relative;
+      // 只匹配源码工作区，避免先读到 share 中的旧安装副本。
+      const auto workspace = candidate.parent_path().parent_path();
+      if (std::filesystem::is_directory(workspace / "src/pcl_publisher") &&
+        std::filesystem::is_regular_file(candidate)) {return candidate.string();}
+    }
+    const auto parent = ancestor.parent_path();
+    if (parent == ancestor) {break;}
+    ancestor = parent;
+  }
+  return (share / "config/lidar2baselink.yaml").string();
+}
+}  // namespace
+
 class PclPublisher : public rclcpp::Node
 {
 public:
   PclPublisher()
   : Node("pcl_publisher")
   {
-    const auto default_config =
-      ament_index_cpp::get_package_share_directory("pcl_publisher") +
-      "/config/lidar2baselink.yaml";
-    const auto config_path = declare_parameter<std::string>("config_path", default_config);
+    // 节点直接读共享安装文件，源码存在时优先使用，修改后重启即可。
+    // 安装到其他机器且无源码时再读取包share中的副本，不依赖launch注入。
+    const auto config_path = declare_parameter<std::string>("config_path", default_extrinsics());
     target_frame_ = declare_parameter<std::string>("target_frame", "baselink");
     if (target_frame_.empty()) {
       throw std::runtime_error("target_frame must not be empty");

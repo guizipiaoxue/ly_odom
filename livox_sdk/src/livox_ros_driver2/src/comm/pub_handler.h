@@ -33,6 +33,7 @@
 #include <map>
 #include <memory>
 #include <mutex>              // std::mutex
+#include <string>
 #include <thread>
 
 #include "livox_lidar_api.h"
@@ -90,6 +91,10 @@ class PubHandler {
   void AddLidarsExtParam(LidarExtParameter& extrinsic_params);
   void ClearAllLidarsExtrinsicParams();
   void SetImuDataCallback(ImuDataCallback cb, void* client_data);
+  // 在SDK与工作线程启动前设置，运行期间只读；参数直接来自驱动节点。
+  void SetTimeSyncConfig(bool require_ptp_sync, uint64_t offset_ns,
+                         const std::string& target_ip);
+  bool AcceptsLidar(uint32_t handle) const;
 
  private:
   //thread to process raw data
@@ -128,6 +133,9 @@ class PubHandler {
   std::map<uint32_t, std::vector<PointXyzlt>> points_;
   std::map<uint32_t, LidarExtParameter> lidar_extrinsics_;
   static std::atomic<bool> is_timestamp_sync_;
+  bool require_ptp_sync_ = false;
+  uint64_t ptp_utc_offset_ns_ = 0;
+  std::string target_ip_;
   uint16_t lidar_listen_id_ = 0;
 };
 

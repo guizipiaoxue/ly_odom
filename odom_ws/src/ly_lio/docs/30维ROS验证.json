@@ -1,0 +1,249 @@
+{
+  "generated_at": "2026-10-13T19:31:13.212916+08:00",
+  "scope": "ROS 2 Humble paced synthetic PointCloud2/IMU integration validation of restored Point-LIO 30-state model",
+  "hardware_started": false,
+  "ptp_modified": false,
+  "synthetic_bag_created": false,
+  "zero_drift_accuracy_evaluated": false,
+  "state_dimension": 30,
+  "batch_duration_s": 0.0001,
+  "translation_convention": "extrinsic_T is IMU origin in LiDAR coordinates (c_L); internal p_I=R_IL*p_L+t_IL uses t_IL=-R_IL*c_L",
+  "input_extrinsic_T_m": [
+    -0.011,
+    -0.02329,
+    0.04412
+  ],
+  "expected_internal_t_IL_at_identity_m": [
+    0.011,
+    0.02329,
+    -0.04412
+  ],
+  "summary": {
+    "passed": true,
+    "case_count": 3,
+    "total_odometry": 108,
+    "total_body_tf": 108,
+    "total_registered_cloud": 108,
+    "all_output_stamp_sequences_equal_and_strictly_increasing": true,
+    "max_odometry_body_tf_pose_error": 0.0,
+    "all_node_sigint_exit_codes": [
+      0,
+      0,
+      0
+    ],
+    "all_reset_and_reinitialization_checks_passed": true,
+    "all_output_pose_twist_covariance_and_cloud_finite": true,
+    "no_unrequested_imu_gap_resets": true,
+    "temporary_programs_and_data_removed": true
+  },
+  "cases": [
+    {
+      "case": "fixed",
+      "ros_domain_id": "218",
+      "scope": "paced synthetic ROS PC2/IMU integration; no hardware, no PTP operations, no drift accuracy claim",
+      "input_imu_hz": 200,
+      "input_cloud_hz": 10,
+      "points_per_cloud": 1323,
+      "passed": true,
+      "parameters": {
+        "extrinsic_est_en": false,
+        "extrinsic_T": [
+          -0.011,
+          -0.02329,
+          0.04412
+        ],
+        "extrinsic_translation_convention": "imu_in_lidar",
+        "lidar_batch_duration": 0.0001,
+        "extrinsic_rotation_cov": 0.01,
+        "extrinsic_translation_cov": 0.01,
+        "body_extrinsic_path": "package://pcl_publisher/config/lidar2baselink.yaml"
+      },
+      "stable_phase": {
+        "odom_start": 0,
+        "odom_count": 15,
+        "sensor_tf_start": 0,
+        "sensor_tf_count": 0
+      },
+      "reset_response": "滤波状态、队列、地图与轨迹已重置",
+      "reset_phase": {
+        "odom_start": 15,
+        "odom_count": 15,
+        "sensor_tf_start": 0,
+        "sensor_tf_count": 0
+      },
+      "outputs": {
+        "odometry": 30,
+        "body_tf": 30,
+        "registered_cloud": 30,
+        "timestamps_equal": true,
+        "timestamps_strictly_increasing": true,
+        "max_odom_tf_pose_error": 0.0,
+        "max_quaternion_norm_error": 0.0,
+        "all_outputs_finite": true
+      },
+      "sensor_tf": {
+        "mode": "static T_BL",
+        "static_count": 1,
+        "max_translation_error_m": 0.0,
+        "max_rotation_matrix_error": 4.074462989223093e-10,
+        "dynamic_sensor_tf_count": 0
+      },
+      "reset_startup_body_pose_max_error": 8.126715804468443e-08,
+      "exit_code": 0,
+      "startup_reports_state_dimension": 30,
+      "startup_internal_t_IL_m": [
+        0.011,
+        0.02329,
+        -0.04412
+      ],
+      "no_unrequested_reset": true,
+      "published_inputs": {
+        "imu": 1200,
+        "cloud": 58
+      }
+    },
+    {
+      "case": "online_mount",
+      "ros_domain_id": "219",
+      "scope": "paced synthetic ROS PC2/IMU integration; no hardware, no PTP operations, no drift accuracy claim",
+      "input_imu_hz": 200,
+      "input_cloud_hz": 10,
+      "points_per_cloud": 1323,
+      "passed": true,
+      "parameters": {
+        "extrinsic_est_en": true,
+        "extrinsic_T": [
+          -0.011,
+          -0.02329,
+          0.04412
+        ],
+        "extrinsic_translation_convention": "imu_in_lidar",
+        "lidar_batch_duration": 0.0001,
+        "extrinsic_rotation_cov": 0.01,
+        "extrinsic_translation_cov": 0.01,
+        "body_extrinsic_path": "package://pcl_publisher/config/lidar2baselink.yaml"
+      },
+      "stable_phase": {
+        "odom_start": 0,
+        "odom_count": 15,
+        "sensor_tf_start": 0,
+        "sensor_tf_count": 0
+      },
+      "shift_phase": {
+        "odom_start": 15,
+        "odom_count": 9,
+        "sensor_tf_start": 0,
+        "sensor_tf_count": 0
+      },
+      "reset_response": "滤波状态、队列、地图与轨迹已重置",
+      "reset_phase": {
+        "odom_start": 24,
+        "odom_count": 15,
+        "sensor_tf_start": 0,
+        "sensor_tf_count": 0
+      },
+      "outputs": {
+        "odometry": 39,
+        "body_tf": 39,
+        "registered_cloud": 39,
+        "timestamps_equal": true,
+        "timestamps_strictly_increasing": true,
+        "max_odom_tf_pose_error": 0.0,
+        "max_quaternion_norm_error": 1.1102230246251565e-16,
+        "all_outputs_finite": true
+      },
+      "sensor_tf": {
+        "mode": "static T_BL",
+        "static_count": 1,
+        "max_translation_error_m": 0.0,
+        "max_rotation_matrix_error": 4.074462989223093e-10,
+        "dynamic_sensor_tf_count": 0
+      },
+      "reset_startup_body_pose_max_error": 8.162540084122316e-08,
+      "exit_code": 0,
+      "startup_reports_state_dimension": 30,
+      "startup_internal_t_IL_m": [
+        0.011,
+        0.02329,
+        -0.04412
+      ],
+      "no_unrequested_reset": true,
+      "published_inputs": {
+        "imu": 1400,
+        "cloud": 67
+      }
+    },
+    {
+      "case": "online_explicit_bi",
+      "ros_domain_id": "221",
+      "scope": "paced synthetic ROS PC2/IMU integration; no hardware, no PTP operations, no drift accuracy claim",
+      "input_imu_hz": 200,
+      "input_cloud_hz": 10,
+      "points_per_cloud": 1323,
+      "passed": true,
+      "parameters": {
+        "extrinsic_est_en": true,
+        "extrinsic_T": [
+          -0.011,
+          -0.02329,
+          0.04412
+        ],
+        "extrinsic_translation_convention": "imu_in_lidar",
+        "lidar_batch_duration": 0.0001,
+        "extrinsic_rotation_cov": 0.01,
+        "extrinsic_translation_cov": 0.01,
+        "body_extrinsic_path": ""
+      },
+      "stable_phase": {
+        "odom_start": 0,
+        "odom_count": 15,
+        "sensor_tf_start": 0,
+        "sensor_tf_count": 15
+      },
+      "shift_phase": {
+        "odom_start": 15,
+        "odom_count": 9,
+        "sensor_tf_start": 15,
+        "sensor_tf_count": 9
+      },
+      "reset_response": "滤波状态、队列、地图与轨迹已重置",
+      "reset_phase": {
+        "odom_start": 24,
+        "odom_count": 15,
+        "sensor_tf_start": 24,
+        "sensor_tf_count": 15
+      },
+      "outputs": {
+        "odometry": 39,
+        "body_tf": 39,
+        "registered_cloud": 39,
+        "timestamps_equal": true,
+        "timestamps_strictly_increasing": true,
+        "max_odom_tf_pose_error": 0.0,
+        "max_quaternion_norm_error": 0.0,
+        "all_outputs_finite": true
+      },
+      "sensor_tf": {
+        "mode": "dynamic T_BI*T_IL",
+        "dynamic_count": 39,
+        "static_count": 0,
+        "sensor_and_odom_stamps_equal": true,
+        "nonzero_residual_calibration_change": 0.011394103041794248,
+        "reset_startup_translation_error_m": 4.0701727425929146e-08,
+        "reset_startup_rotation_matrix_error": 6.170895043223811e-10
+      },
+      "exit_code": 0,
+      "startup_reports_state_dimension": 30,
+      "startup_internal_t_IL_m": [
+        0.011,
+        0.02329,
+        -0.04412
+      ],
+      "no_unrequested_reset": true,
+      "published_inputs": {
+        "imu": 1400,
+        "cloud": 67
+      }
+    }
+  ]
+}

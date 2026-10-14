@@ -13,16 +13,184 @@
 #include "lidar_adapter/livox_custom_msg.h"
 #include "lidar_adapter/livox_pointcloud2.h"
 #include "lidar_adapter/unitree_lidar.h"
+#include <ament_index_cpp/get_package_share_directory.hpp>
+#include <filesystem>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <map>
+#include <memory>
+#include <rcl/arguments.h>
+#include <rcl/remap.h>
+#include <rclcpp/parameter_map.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
+#include <rcl_yaml_param_parser/parser.h>
+#include <string_view>
 #include <yaml-cpp/yaml.h>
 
 namespace ly_lio {
+namespace {
+// 从已定位的包目录向上找源码，不依赖当前工作目录或编译机器的绝对路径。
+std::filesystem::path source_file_near(std::filesystem::path directory,
+    const std::vector<std::filesystem::path> &relative_paths) {
+    while (!directory.empty()) {
+        for (const auto &relative : relative_paths) {
+            std::error_code error;
+            const auto candidate = directory / relative;
+            if (std::filesystem::is_regular_file(candidate, error)) { return candidate; }
+        }
+        const auto parent = directory.parent_path();
+        if (parent == directory) { break; }
+        directory = parent;
+    }
+    return {};
+}
+
+std::filesystem::path default_config_file() {
+    const auto share = std::filesystem::path(
+        ament_index_cpp::get_package_share_directory("ly_lio"));
+    const auto source = source_file_near(share,
+        {"src/ly_lio/config/mid360.yaml", "odom_ws/src/ly_lio/config/mid360.yaml"});
+    // 源码存在时直接读取可编辑版本；独立安装部署则读取 share 中的版本。
+    return source.empty() ? share / "config/mid360.yaml" : source;
+}
+
+std::string node_fqn(const rclcpp::NodeOptions &options,
+    const rcl_arguments_t *global_arguments) {
+    const auto *local_arguments = &options.get_rcl_node_options()->arguments;
+    const auto allocator = options.get_rcl_node_options()->allocator;
+    const auto free_string = [allocator](char *value) {
+        if (value) { allocator.deallocate(value, allocator.state); }
+    };
+    char *raw_name = nullptr;
+    const auto name_result = rcl_remap_node_name(local_arguments, global_arguments,
+        "ly_lio", allocator, &raw_name);
+    const std::unique_ptr<char, decltype(free_string)> remapped_name(raw_name, free_string);
+    if (name_result != RCL_RET_OK) {
+        rclcpp::exceptions::throw_from_rcl_error(name_result, "无法解析节点名称重映射");
+    }
+    const std::string name = remapped_name ? remapped_name.get() : "ly_lio";
+    char *raw_namespace = nullptr;
+    const auto namespace_result = rcl_remap_node_namespace(local_arguments, global_arguments,
+        name.c_str(), allocator, &raw_namespace);
+    const std::unique_ptr<char, decltype(free_string)> remapped_namespace(raw_namespace, free_string);
+    if (namespace_result != RCL_RET_OK) {
+        rclcpp::exceptions::throw_from_rcl_error(namespace_result, "无法解析节点命名空间重映射");
+    }
+    std::string namespace_name = remapped_namespace ? remapped_namespace.get() : "/";
+    if (namespace_name.empty() || namespace_name.front() != '/') { namespace_name.insert(0, "/"); }
+    if (namespace_name.back() != '/') { namespace_name += '/'; }
+    return namespace_name + name;
+}
+
+rclcpp::NodeOptions with_default_configuration(const rclcpp::NodeOptions &options) {
+    // 用 ROS 原生 YAML 解析器读取默认参数；不在 shell/launch 中解析或生成参数字典。
+    // Humble 的 parameter_map_from_yaml_file 未释放原生解析对象，此处用 RAII 完整回收。
+    const std::unique_ptr<rcl_params_t, decltype(&rcl_yaml_node_struct_fini)> parsed_defaults(
+        rcl_yaml_node_struct_init(options.get_rcl_node_options()->allocator), rcl_yaml_node_struct_fini);
+    if (!parsed_defaults) { throw std::bad_alloc(); }
+    if (!rcl_parse_yaml_file(default_config_file().c_str(), parsed_defaults.get())) {
+        rclcpp::exceptions::throw_from_rcl_error(RCL_RET_ERROR, "无法读取默认 mid360.yaml");
+    }
+    const auto defaults = rclcpp::parameter_map_from(parsed_defaults.get());
+    const auto default_node = defaults.find("/ly_lio");
+    if (default_node == defaults.end()) {
+        throw std::invalid_argument("默认 mid360.yaml 必须包含 ly_lio.ros__parameters");
+    }
+    std::map<std::string, rclcpp::Parameter> parameters;
+    const auto merge = [&parameters](const auto &values) {
+        for (const auto &parameter : values) { parameters.insert_or_assign(parameter.get_name(), parameter); }
+    };
+    merge(default_node->second);
+    const auto context = options.context()->get_rcl_context();
+    const auto *global_arguments = options.use_global_arguments() ? &context->global_arguments : nullptr;
+    const auto full_name = node_fqn(options, global_arguments);
+    const auto merge_arguments = [&](const rcl_arguments_t *arguments) {
+        if (!arguments) { return; }
+        rcl_params_t *raw_parameters = nullptr;
+        const auto result = rcl_arguments_get_param_overrides(arguments, &raw_parameters);
+        const std::unique_ptr<rcl_params_t, decltype(&rcl_yaml_node_struct_fini)> parsed(
+            raw_parameters, rcl_yaml_node_struct_fini);
+        if (result != RCL_RET_OK) {
+            rclcpp::exceptions::throw_from_rcl_error(result, "无法解析显式 ROS 参数");
+        }
+        if (!parsed) { return; }
+        // 原生匹配保留 /**、节点名及命名空间的参数作用域。
+        for (const auto &[name, values] : rclcpp::parameter_map_from(parsed.get(), full_name.c_str())) {
+            merge(values);
+        }
+    };
+    // 与 ROS 默认优先级一致：默认 YAML < 全局参数 < 局部参数 < 组件 NodeOptions。
+    // 只注入默认 YAML 会让程序参数反过来屏蔽 CLI，因此先合并全部显式来源。
+    merge_arguments(global_arguments);
+    merge_arguments(&options.get_rcl_node_options()->arguments);
+    merge(options.parameter_overrides());
+    std::vector<rclcpp::Parameter> overrides;
+    overrides.reserve(parameters.size());
+    for (const auto &[name, parameter] : parameters) { overrides.push_back(parameter); }
+    auto configured = options;
+    configured.parameter_overrides(overrides);
+    return configured;
+}
+
+void log_parameter_files(const rclcpp::Logger &logger, const rcl_arguments_t *arguments) {
+    if (!arguments) { return; }
+    const auto count = rcl_arguments_get_param_files_count(arguments);
+    if (count <= 0) { return; }
+    const auto allocator = rcl_get_default_allocator();
+    char **raw_files = nullptr;
+    const auto result = rcl_arguments_get_param_files(arguments, allocator, &raw_files);
+    const auto free_files = [allocator, count](char **files) {
+        if (!files) { return; }
+        for (int index = 0; index < count; ++index) { allocator.deallocate(files[index], allocator.state); }
+        allocator.deallocate(files, allocator.state);
+    };
+    const std::unique_ptr<char *, decltype(free_files)> files(raw_files, free_files);
+    if (result != RCL_RET_OK) {
+        rclcpp::exceptions::throw_from_rcl_error(result, "无法读取显式参数文件路径");
+    }
+    for (int index = 0; index < count; ++index) {
+        RCLCPP_INFO(logger, "显式 ROS 参数文件（覆盖默认值）：%s", files.get()[index]);
+    }
+}
+
+std::string body_extrinsic_file(const std::string &configured_path) {
+    constexpr std::string_view prefix = "package://";
+    if (!configured_path.starts_with(prefix)) { return configured_path; }
+    const auto package_end = configured_path.find('/', prefix.size());
+    if (package_end == std::string::npos || package_end == prefix.size()) {
+        throw std::invalid_argument("外参 package:// 路径需要包名和包内文件名");
+    }
+    const auto package = configured_path.substr(prefix.size(), package_end - prefix.size());
+    const auto relative = std::filesystem::path(configured_path.substr(package_end + 1));
+    if (relative.empty() || relative.is_absolute()) {
+        throw std::invalid_argument("外参 package:// 路径需要相对包目录的文件名");
+    }
+    for (const auto &part : relative) {
+        if (part == "..") { throw std::invalid_argument("外参 package:// 路径不能跳出包目录"); }
+    }
+    if (package == "pcl_publisher" && relative == "config/lidar2baselink.yaml") {
+        // 两个工作区共用同一个物理安装文件，节点直接读取，不生成临时副本。
+        const auto source = source_file_near(default_config_file().parent_path(),
+            {"pcl_ws/config/lidar2baselink.yaml"});
+        if (!source.empty()) { return source.string(); }
+        const auto share = std::filesystem::path(ament_index_cpp::get_package_share_directory(package));
+        const auto package_source = source_file_near(share, {"pcl_ws/config/lidar2baselink.yaml"});
+        return (package_source.empty() ? share / relative : package_source).string();
+    }
+    return (std::filesystem::path(ament_index_cpp::get_package_share_directory(package)) / relative).string();
+}
+}  // namespace
+
 static builtin_interfaces::msg::Time ros_time(double seconds) {
     // 四舍五入到整纳秒再拆分，避免浮点尾数导致 nanosec==1e9 的非法时间。
     return rclcpp::Time(static_cast<int64_t>(std::llround(seconds * 1e9)));
 }
-LyLioNode::LyLioNode(const rclcpp::NodeOptions &options) : Node("ly_lio", options) {
+LyLioNode::LyLioNode(const rclcpp::NodeOptions &options)
+    : Node("ly_lio", with_default_configuration(options)) {
+    RCLCPP_INFO(get_logger(), "默认 ROS 参数文件：%s", default_config_file().c_str());
+    if (options.use_global_arguments()) {
+        log_parameter_files(get_logger(), &options.context()->get_rcl_context()->global_arguments);
+    }
+    log_parameter_files(get_logger(), &options.get_rcl_node_options()->arguments);
     const auto lidar_topic = declare_parameter<std::string>("lidar_topic", "/livox/lidar");
     const auto imu_topic = declare_parameter<std::string>("imu_topic", "/livox/imu");
     const auto lidar_type = declare_parameter<std::string>("lidar_type", "livox_pointcloud2");
@@ -38,7 +206,9 @@ LyLioNode::LyLioNode(const rclcpp::NodeOptions &options) : Node("ly_lio", option
         if (!body_rotation.empty() || !body_translation.empty()) {
             throw std::invalid_argument("机体外参文件和 imu_to_body_R/T 只能选择一种来源");
         }
-        const auto config = YAML::LoadFile(body_path);
+        const auto body_file = body_extrinsic_file(body_path);
+        RCLCPP_INFO(get_logger(), "直接读取固定安装外参：%s", body_file.c_str());
+        const auto config = YAML::LoadFile(body_file);
         const auto rotation = config["lidar_to_gimbal_rotation"];
         const auto translation = config["lidar_to_gimbal_translation"];
         if (!rotation.IsSequence() || rotation.size() != 3 ||
@@ -47,23 +217,24 @@ LyLioNode::LyLioNode(const rclcpp::NodeOptions &options) : Node("ly_lio", option
         }
         // 文件给出 T_BL；使用已配置的 T_IL 得到 T_BI = T_BL * inverse(T_IL)。
         // 因此雷达/IMU 原点不同也可由 extrinsic_R/T 明确描述，不能重复施加安装外参。
-        Eigen::Matrix3d R_BL;
-        Eigen::Vector3d t_BL;
+        body_from_lidar_mount_ = true;
         for (size_t row = 0; row < 3; ++row) {
             if (!rotation[row].IsSequence() || rotation[row].size() != 3) {
                 throw std::invalid_argument("机体外参旋转每行必须有 3 个元素");
             }
-            for (size_t col = 0; col < 3; ++col) { R_BL(row, col) = rotation[row][col].as<double>(); }
-            t_BL(row) = translation[row].as<double>();
+            for (size_t col = 0; col < 3; ++col) { R_BL_(row, col) = rotation[row][col].as<double>(); }
+            t_BL_(row) = translation[row].as<double>();
         }
+        if (!R_BL_.allFinite() || !t_BL_.allFinite() ||
+            !(R_BL_ * R_BL_.transpose()).isApprox(Eigen::Matrix3d::Identity(), 1e-5) ||
+            std::abs(R_BL_.determinant() - 1.0) > 1e-5) {
+            throw std::invalid_argument("激光→机体安装外参必须为有限刚体变换");
+        }
+        R_BL_ = Eigen::Quaterniond(R_BL_).normalized().toRotationMatrix();
         // 先声明滤波参数，读取经过校验的 lidar→IMU 标定，再组合固定安装关系。
         lio_ = std::make_unique<LyLio>(*this);
-        const auto &initial = lio_->current_state();
-        if (get_parameter("extrinsic_est_en").as_bool()) {
-            throw std::invalid_argument("使用 lidar→机体文件推导 IMU 安装外参时需固定 extrinsic_R/T；在线标定请直接配置 imu_to_body_R/T");
-        }
-        R_BI_ = R_BL * initial.offset_R_L_I.transpose();
-        t_BI_ = t_BL - R_BI_ * initial.offset_T_L_I;
+        R_BI_ = R_BL_ * lio_->lidar_to_imu_rotation().transpose();
+        t_BI_ = t_BL_ - R_BI_ * lio_->lidar_to_imu_translation();
     } else if (!body_rotation.empty() || !body_translation.empty()) {
         if (body_rotation.size() != 9 || body_translation.size() != 3) {
             throw std::invalid_argument("imu_to_body_R/T 的长度必须分别为 9/3");
@@ -71,7 +242,7 @@ LyLioNode::LyLioNode(const rclcpp::NodeOptions &options) : Node("ly_lio", option
         R_BI_ = Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(body_rotation.data());
         t_BI_ = Eigen::Map<const Eigen::Vector3d>(body_translation.data());
     } else if (imu_frame_ != body_frame_) {
-        throw std::invalid_argument("imu_frame 与 body_frame 不同时必须配置 body_extrinsic_path 或 imu_to_body_R/T；launch 可传 body_config_path:=外参文件");
+        throw std::invalid_argument("imu_frame 与 body_frame 不同时必须配置 body_extrinsic_path 或 imu_to_body_R/T");
     }
     if (!R_BI_.allFinite() || !t_BI_.allFinite() ||
         !(R_BI_ * R_BI_.transpose()).isApprox(Eigen::Matrix3d::Identity(), 1e-5) ||
@@ -96,10 +267,23 @@ LyLioNode::LyLioNode(const rclcpp::NodeOptions &options) : Node("ly_lio", option
     if (!std::isfinite(scale) || scale <= 0 || !std::isfinite(save_resolution) || save_resolution <= 0 ||
         path_max_poses_ < 1 || !std::isfinite(path_publish_interval_) || path_publish_interval_ < 0 ||
         odom_frame_.empty() || body_frame_.empty() || imu_frame_.empty() || lidar_frame_.empty() ||
-        odom_frame_ == body_frame_ || odom_frame_ == imu_frame_ || map_path_.empty()) {
+        odom_frame_ == body_frame_ || odom_frame_ == imu_frame_ || odom_frame_ == lidar_frame_ || map_path_.empty()) {
         throw std::invalid_argument("帧名、时间缩放或发布/地图参数非法");
     }
     if (!lio_) { lio_ = std::make_unique<LyLio>(*this); }
+    if (!body_from_lidar_mount_) {
+        R_BL_ = R_BI_ * lio_->lidar_to_imu_rotation();
+        t_BL_ = t_BI_ + R_BI_ * lio_->lidar_to_imu_translation();
+    }
+    if (body_frame_ == lidar_frame_ &&
+        (!R_BL_.isApprox(Eigen::Matrix3d::Identity(), 1e-5) || t_BL_.norm() > 1e-9 ||
+         (!body_from_lidar_mount_ && lio_->estimates_extrinsics()))) {
+        throw std::invalid_argument("body_frame与lidar_frame同名时必须是同一固定原点与测量轴");
+    }
+    RCLCPP_INFO(get_logger(), "Point-LIO状态/P: %d维，外参%s；内部t_IL=[%.8f, %.8f, %.8f]m",
+        state::DIM, lio_->estimates_extrinsics() ? "在线估计" : "固定",
+        lio_->lidar_to_imu_translation().x(), lio_->lidar_to_imu_translation().y(),
+        lio_->lidar_to_imu_translation().z());
     const bool terminal_enabled = declare_parameter<bool>("terminal.enabled", true);
     const bool terminal_clear = declare_parameter<bool>("terminal.clear_screen", true);
     const double terminal_rate = declare_parameter<double>("terminal.refresh_rate_hz", 10.0);
@@ -123,16 +307,19 @@ LyLioNode::LyLioNode(const rclcpp::NodeOptions &options) : Node("ly_lio", option
     cloud_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("ly_lio/cloud_registered", output_qos);
     path_publisher_ = create_publisher<nav_msgs::msg::Path>("ly_lio/path", rclcpp::QoS(10).reliable());
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-    if (publish_tf_ && publish_sensor_tf && body_frame_ != imu_frame_) {
+    publish_dynamic_sensor_tf_ = publish_tf_ && publish_sensor_tf && body_frame_ != lidar_frame_ &&
+        !body_from_lidar_mount_ && lio_->estimates_extrinsics();
+    if (publish_tf_ && publish_sensor_tf && body_frame_ != lidar_frame_ && !publish_dynamic_sensor_tf_) {
         sensor_tf_broadcaster_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(*this);
         geometry_msgs::msg::TransformStamped tf;
         tf.header.stamp = now();
         tf.header.frame_id = body_frame_;
-        tf.child_frame_id = imu_frame_;
-        tf.transform.translation.x = t_BI_.x();
-        tf.transform.translation.y = t_BI_.y();
-        tf.transform.translation.z = t_BI_.z();
-        const Eigen::Quaterniond q(R_BI_);
+        // 原始IMU的frame_id只表示测量轴；livox_frame仍是激光原点，发布真正的T_BL。
+        tf.child_frame_id = lidar_frame_;
+        tf.transform.translation.x = t_BL_.x();
+        tf.transform.translation.y = t_BL_.y();
+        tf.transform.translation.z = t_BL_.z();
+        const Eigen::Quaterniond q(R_BL_);
         tf.transform.rotation.x = q.x(); tf.transform.rotation.y = q.y();
         tf.transform.rotation.z = q.z(); tf.transform.rotation.w = q.w();
         sensor_tf_broadcaster_->sendTransform(tf);
@@ -227,15 +414,20 @@ void LyLioNode::process_pending() {
         clear_output_history();
         RCLCPP_WARN(get_logger(), "传感器时序中断，已清空轨迹和导出地图，等待重新静止初始化");
     } else if (!initialized_before && lio_->initialized()) {
-        RCLCPP_INFO(get_logger(), "静止标定和初始地图完成，开始逐点 Point-LIO 更新");
+        RCLCPP_INFO(get_logger(), "静止标定和初始地图完成，开始 Batch 点到地图联合更新");
     }
     if (terminal_) { terminal_->update(lio_->diagnostics()); }
 }
 
 void LyLioNode::publish_odometry(const common::Odometry &imu_odometry) {
     // T_WB = T_WI * inverse(T_BI)，地图仍在滤波器建立的 odom 中，无需再变换。
-    const auto odometry = body_odometry(imu_odometry.timestamp, lio_->current_state(),
-        lio_->covariance(), R_BI_, t_BI_);
+    if (body_from_lidar_mount_) {
+        R_BI_ = R_BL_ * lio_->lidar_to_imu_rotation().transpose();
+        t_BI_ = t_BL_ - R_BI_ * lio_->lidar_to_imu_translation();
+    }
+    const auto odometry = body_from_lidar_mount_ ?
+        body_odometry_from_lidar_mount(imu_odometry.timestamp, lio_->current_state(), lio_->covariance(), R_BL_, t_BL_) :
+        body_odometry(imu_odometry.timestamp, lio_->current_state(), lio_->covariance(), R_BI_, t_BI_);
     nav_msgs::msg::Odometry msg;
     // stamp 是此位姿对应的传感器采样时刻，不能改为回调的 now() 掩盖输入批次延迟。
     msg.header.stamp = ros_time(odometry.timestamp);
@@ -273,6 +465,21 @@ void LyLioNode::publish_odometry(const common::Odometry &imu_odometry) {
         tf.transform.rotation = msg.pose.pose.orientation;
         // TF 与里程计都使用转换后的 baselink 位姿，安装外参只组合一次。
         tf_broadcaster_->sendTransform(tf);
+        if (publish_dynamic_sensor_tf_) {
+            // 显式固定T_BI时在线T_IL尚在变化，传感器关系随当前标定发布动态TF。
+            geometry_msgs::msg::TransformStamped sensor_tf;
+            sensor_tf.header.stamp = msg.header.stamp;
+            sensor_tf.header.frame_id = body_frame_;
+            sensor_tf.child_frame_id = lidar_frame_;
+            const Eigen::Vector3d t = t_BI_ + R_BI_ * lio_->lidar_to_imu_translation();
+            const Eigen::Quaterniond q(R_BI_ * lio_->lidar_to_imu_rotation());
+            sensor_tf.transform.translation.x = t.x();
+            sensor_tf.transform.translation.y = t.y();
+            sensor_tf.transform.translation.z = t.z();
+            sensor_tf.transform.rotation.x = q.x(); sensor_tf.transform.rotation.y = q.y();
+            sensor_tf.transform.rotation.z = q.z(); sensor_tf.transform.rotation.w = q.w();
+            tf_broadcaster_->sendTransform(sensor_tf);
+        }
         last_tf_time_ = odometry.timestamp;
     }
     if (terminal_) {
@@ -289,7 +496,7 @@ void LyLioNode::publish_odometry(const common::Odometry &imu_odometry) {
             path_.poses.erase(path_.poses.begin());
         }
         // 每次发布的位姿都保留在Path内，仅降低重复整条历史的发送频率。
-        // Path独立限频；逐点发布开启时也避免反复序列化完整轨迹挤占处理时间。
+        // Path独立限频；按批发布开启时也避免反复序列化完整轨迹挤占处理时间。
         if (last_path_time_ < 0 || odometry.timestamp - last_path_time_ >= path_publish_interval_) {
             path_publisher_->publish(path_);
             last_path_time_ = odometry.timestamp;

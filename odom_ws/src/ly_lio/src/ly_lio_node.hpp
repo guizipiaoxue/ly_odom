@@ -43,6 +43,10 @@ class LyLioNode : public rclcpp::Node {
     std::string odom_frame_, body_frame_, imu_frame_, lidar_frame_, map_path_;
     Eigen::Matrix3d R_BI_ = Eigen::Matrix3d::Identity();
     Eigen::Vector3d t_BI_ = Eigen::Vector3d::Zero();
+    Eigen::Matrix3d R_BL_ = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d t_BL_ = Eigen::Vector3d::Zero();
+    bool body_from_lidar_mount_ = false;
+    bool publish_dynamic_sensor_tf_ = false;
     double last_tf_time_ = -1;
     double last_path_time_ = -1;
     double path_publish_interval_ = 0.1;

@@ -23,7 +23,7 @@
 //
 
 #include "livox_lidar_callback.h"
-#include <cstdlib>
+#include "comm/pub_handler.h"
 
 #include "livox_lidar_api.h"
 #include <string>
@@ -40,8 +40,7 @@ void LivoxLidarCallback::LidarInfoChangeCallback(const uint32_t handle,
     return;
   }
   // 只配置指定雷达，不自动启用同网段其他雷达的采样与 IMU。
-  const char* target_ip = std::getenv("LIVOX_TARGET_IP");
-  if (target_ip && IpNumToString(handle) != target_ip) { return; }
+  if (!pub_handler().AcceptsLidar(handle)) { return; }
   LdsLidar* lds_lidar = static_cast<LdsLidar*>(client_data);
 
   LidarDevice* lidar_device = GetLidarDevice(handle, client_data);

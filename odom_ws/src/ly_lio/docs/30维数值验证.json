@@ -1,0 +1,94 @@
+{
+  "passed": true,
+  "seed": 20261013,
+  "floating_point": "IEEE-754 double",
+  "reference": "independent dense 24/30-dimensional equations; no archived 24-dimensional source snapshot",
+  "scope": "sparse propagation, stacked Kalman vs information batch, both SO(3) reset blocks, all 64 IMU saturation masks, fixed-extrinsic projection",
+  "tolerance": {
+    "absolute_equation_error": 1e-10,
+    "SO3_central_difference_error": 3e-09,
+    "difference_step": 1e-06
+  },
+  "cases": {
+    "batch_12": 60,
+    "batch_6": 60,
+    "fixed_24_projection_sequence_steps": 600,
+    "imu_saturation_masks": 64,
+    "so3_reset_finite_difference": 60,
+    "sparse_prediction": 80
+  },
+  "max_absolute_errors": {
+    "batch_12_covariance": 2.7755575615628914e-17,
+    "batch_12_negative_eigenvalue": 0,
+    "batch_12_state": 5.551115123125783e-17,
+    "batch_12_symmetry_error": 0,
+    "batch_6_covariance": 1.0408340855860843e-17,
+    "batch_6_negative_eigenvalue": 1.1289806347228261e-17,
+    "batch_6_state": 1.1102230246251565e-16,
+    "batch_6_symmetry_error": 0,
+    "fixed_24_projection_covariance": 1.1102230246251565e-16,
+    "fixed_24_projection_state": 2.220446049250313e-16,
+    "fixed_external_covariance": 0,
+    "fixed_external_state": 0,
+    "imu_covariance": 2.0816681711721685e-17,
+    "imu_negative_eigenvalue": 0,
+    "imu_state": 5.551115123125783e-17,
+    "imu_symmetry_error": 0,
+    "prediction_negative_eigenvalue": 0,
+    "prediction_state": 0,
+    "prediction_symmetry_error": 0,
+    "so3_reset_finite_difference": 1.401974092374303e-10,
+    "sparse_prediction_covariance": 3.3306690738754696e-16
+  },
+  "limitations": [
+    "Numerical/formula projection equivalence is not a comparison against independently archived 24-state source.",
+    "Synthetic random data does not establish real hardware drift or dynamic accuracy.",
+    "Extrinsic initial covariance was strictly positive in online mode and exactly zero in fixed mode.",
+    "The SO(3) finite difference checks the reset tangent Jacobian, and stacked updates check assembly of both rotation reset blocks and cross-covariances."
+  ],
+  "validated_at": "2026-10-13",
+  "source_sha256": "b40e2e362b98df28f8f8ca003e52ae78120e9d731f15c55dfd1b9460ef21c6cf",
+  "conditions": {
+    "prediction_dt_seconds": [
+      0.0001,
+      0.002,
+      0.005,
+      0.02,
+      0.1
+    ],
+    "noise_reference_dt_seconds": 0.005,
+    "process_noise_blocks": [
+      "omega",
+      "a",
+      "bg",
+      "ba"
+    ],
+    "batch_row_counts": [
+      1,
+      3,
+      6,
+      12,
+      30
+    ],
+    "batch_measured_state_blocks": [
+      "p",
+      "R",
+      "R_IL",
+      "t_IL"
+    ],
+    "batch_reference": "full stacked H, diagonal measurement R, Joseph posterior then full block-diagonal SO3 reset",
+    "fixed_mode": "30-state covariance embeds an SPD 24-state physical covariance; extrinsic rows/columns zero",
+    "online_mode": "SPD 30-state random covariance with correlated rotation/extrinsic/physical blocks",
+    "projection_sequence": "6 fixtures of 100 steps: covariance/state prediction, masked IMU update, fixed-extrinsic batch update",
+    "reset_rotation_magnitudes_radians": [
+      0,
+      0.0001,
+      0.01,
+      0.2,
+      0.8,
+      1.2
+    ],
+    "reset_reference": "central finite difference of Log(Exp(-delta)Exp(delta+epsilon))",
+    "compiler": "g++ C++20 -O1 -DNDEBUG, Eigen"
+  }
+}

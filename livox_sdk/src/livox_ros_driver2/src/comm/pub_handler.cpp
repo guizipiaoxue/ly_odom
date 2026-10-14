@@ -24,24 +24,12 @@
 
 #include "pub_handler.h"
 #include "livox_lidar_api.h"
-#include <cstdlib>
 #include <chrono>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 
 namespace livox_ros {
-
-namespace {
-// PTP 严格模式：未同步数据直接丢弃，绝不回退到主机收包时间。
-bool RequirePtpSync() {
-  static const bool required = [] {
-    const char* value = std::getenv("LIVOX_REQUIRE_PTP_SYNC");
-    return value && (std::string(value) == "1" || std::string(value) == "true");
-  }();
-  return required;
-}
-
-}  // namespace
 
 std::atomic<bool> PubHandler::is_timestamp_sync_;
 
@@ -51,6 +39,20 @@ PubHandler &pub_handler() {
 }
 
 void PubHandler::Init() {
+}
+
+void PubHandler::SetTimeSyncConfig(bool require_ptp_sync, uint64_t offset_ns,
+                                  const std::string& target_ip) {
+  if (point_process_thread_ || lidar_listen_id_ != 0) {
+    throw std::runtime_error("Livox SDK已经运行，不能重新设置启动参数");
+  }
+  require_ptp_sync_ = require_ptp_sync;
+  ptp_utc_offset_ns_ = offset_ns;
+  target_ip_ = target_ip;
+}
+
+bool PubHandler::AcceptsLidar(uint32_t handle) const {
+  return target_ip_.empty() || IpNumToString(handle) == target_ip_;
 }
 
 void PubHandler::Uninit() {
@@ -115,14 +117,13 @@ void PubHandler::OnLivoxLidarPointCloudCallback(uint32_t handle, const uint8_t d
   }
 
   // 专用启动入口只接配置的雷达，其他设备不应改变全局同步标记。
-  const char* target_ip = std::getenv("LIVOX_TARGET_IP");
-  if (target_ip && IpNumToString(handle) != target_ip) { return; }
+  if (!self->AcceptsLidar(handle)) { return; }
   const bool synchronized = data->time_type != kTimestampTypeNoSync;
   is_timestamp_sync_.store(synchronized);
-  if (data->time_type != kTimestampTypeGptpOrPtp && RequirePtpSync()) {
+  if (data->time_type != kTimestampTypeGptpOrPtp && self->require_ptp_sync_) {
     static std::atomic<bool> warned{false};
     if (!warned.exchange(true)) {
-      std::cerr << "LIVOX_REQUIRE_PTP_SYNC=1: discard unsynchronized packet; "
+      std::cerr << "require_ptp_sync=true: discard unsynchronized packet; "
                    "wait for PTP/gPTP time_type=1" << std::endl;
     }
     return;
@@ -291,17 +292,7 @@ uint64_t PubHandler::GetEthPacketTimestamp(uint8_t timestamp_type, uint8_t* time
     // 本机实测 PTP 为 TAI，ROS 使用 UTC；显式配置时差，两路在同一入口转换。
     // GPS 或未同步回退不应用 PTP 时差；不自动猜测设备时标。
     if (timestamp_type == kTimestampTypeGptpOrPtp) {
-      static const uint64_t offset_ns = []() -> uint64_t {
-        const char* value = std::getenv("LIVOX_PTP_UTC_OFFSET");
-        if (!value) { return uint64_t{0}; }
-        char* end = nullptr;
-        const long seconds = std::strtol(value, &end, 10);
-        if (end == value || *end != '\0' || seconds < 0 || seconds > 255) {
-          std::cerr << "Invalid LIVOX_PTP_UTC_OFFSET; expected integer 0..255" << std::endl;
-          std::abort();
-        }
-        return static_cast<uint64_t>(seconds) * 1000000000ULL;
-      }();
+      const uint64_t offset_ns = pub_handler().ptp_utc_offset_ns_;
       const uint64_t timestamp = static_cast<uint64_t>(time.stamp);
       if (timestamp < offset_ns) { return 0; }
       return timestamp - offset_ns;

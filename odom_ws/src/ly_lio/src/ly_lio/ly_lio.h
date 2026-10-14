@@ -47,7 +47,6 @@ class LyLio {
     Eigen::Vector3f point_to_world(const Eigen::Vector3f &point) const;
     bool stationary_initial_state(Eigen::Vector3d &mean_acc, Eigen::Vector3d &mean_gyro) const;
     bool initialize();
-    void restore_extrinsics();
     void clear_tracking_diagnostics();
     void process_scan(const ScanFrame &scan);
     void publish_odometry(double timestamp);
@@ -63,6 +62,9 @@ public:
     bool initialized() const { return is_init; }
     LioDiagnostics diagnostics() const;
     const state &current_state() const { return estimator.kf.x; }
+    const Eigen::Matrix3d &lidar_to_imu_rotation() const { return estimator.kf.x.offset_R_L_I; }
+    const Eigen::Vector3d &lidar_to_imu_translation() const { return estimator.kf.x.offset_T_L_I; }
+    bool estimates_extrinsics() const { return parameters.extrinsic_est_en; }
     const auto &covariance() const { return estimator.kf.P; }
 };
 }  // namespace ly_lio

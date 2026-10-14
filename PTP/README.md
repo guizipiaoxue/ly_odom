@@ -10,6 +10,9 @@
 `enp86s0`，PHC 为 `/dev/ptp0`，主机 IPv4 为 `192.168.1.50/24`，雷达为
 `192.168.1.3`。驱动 JSON 的接收地址已同步为 `.50`；如换网卡/IP，请同步修改
 `livox_sdk/src/livox_ros_driver2/config/MID360_config.json` 中全部接收地址。
+驱动发布、时间转换和启动检查参数在同目录 `mid360.yaml`，由驱动 C++ 直接读取；
+更换网卡时更新其中 `ptp_interface`，更换雷达时同步 `target_ip` 与 JSON 的设备 IP。
+Livox SDK2 直接读取持久 JSON，启动脚本不转换或生成网络配置。
 
 主机已有并启用了 `sentry-ptp4l@enp86s0`、`sentry-phc2sys@enp86s0`、
 `sentry-phc-bootstrap@enp86s0`。日志显示端口 MASTER，phc2sys 为 `s2`，
@@ -57,21 +60,24 @@ sudo ./PTP/install.sh enp86s0
 ./scripts/odom.sh
 ```
 
-该命令先只读检查同一部署的 PTP 主时钟、PHC 伺服和驱动接收地址，然后由一个 ROS
-launch 启动 MID360 驱动、pcl_publisher 和 ly_lio，默认同时录制全部 ROS 话题到
-仓库 `bags/`；用 `bag_dir:=/目录` 指定父目录，`record_bag:=false` 关闭录包。
-Ctrl+C 后等待 rosbag 缓存刷新与 metadata 写出，再关闭终端。驱动始终启用严格 PTP 策略；
+该命令加载 ROS 工作区环境，并由一个 launch 启动 MID360 驱动、pcl_publisher、ly_lio
+和独立录包节点。各节点直接读取各自配置，启动脚本和 launch 不解析、生成或注入参数。
+驱动在初始化 SDK 前只读检查同一部署的 PTP 主时钟、PHC 伺服和 JSON 要求的接收 IP。
+默认同时录制全部 ROS 话题到仓库 `bags/`；保存目录、录制选项和 QoS 在 ROS 工作区外的
+`config/rosbag.yaml` 修改，`record_bag:=false` 关闭录包。
+Ctrl+C 后等待 rosbag 缓存刷新与 metadata 写出，再关闭终端。驱动默认启用严格 PTP 策略，
 未同步数据直接丢弃。Ctrl+C 统一关闭 ROS 节点，PTP 服务继续运行。
-本脚本不调用 sudo，不启动、重启或停止 PTP，也不调整时钟。
+启动流程不调用 sudo，不启动、重启或停止 PTP，也不调整时钟。
 
 ```bash
 # 只读查看服务、开机自启状态与日志。
 ./PTP/check_ptp.sh status enp86s0
 # 原始 rosbag 回放或外部驱动：跳过雷达启动及 PTP/网卡检查。
 ./scripts/odom.sh start_lidar:=false
-# 更换网卡时显式指定；需另行更新网卡地址与驱动 JSON。
-./scripts/odom.sh ptp_interface:=enp86s0
 ```
+
+更换网卡时先在驱动 `config/mid360.yaml` 修改 `ptp_interface`，并同步网卡地址与
+`MID360_config.json`。这些配置在节点启动时读取，修改后重启生效。
 
 原先的 ptp.sh、start_lidar.sh 已删除；PTP 目录只提供一次性部署、构建与验收工具，
 雷达和点云节点统一由里程计启动入口管理。启动驱动后等待初始化及发布稳定约 5 秒，
@@ -116,13 +122,15 @@ ROS 点的真实时间保持：`header.stamp + point.timestamp * 1e-9`。
 
 ## 防止失锁退化
 
-修改后的 MID360 launch 默认设 `LIVOX_REQUIRE_PTP_SYNC=1`。驱动在入队之前
+驱动 `config/mid360.yaml` 默认设 `require_ptp_sync: true`。驱动在入队之前
 要求 `time_type=1`（PTP/gPTP），未同步/GPS 等其他时间源数据直接丢弃。
-它不会用系统收包时间替代采样时间。`scripts/odom.sh` 通过组合 launch 包含此驱动
-启动文件，并在节点启动前检查服务和本地接收 IP。旧安装二进制不包含此策略，需重新构建。
+它不会用系统收包时间替代采样时间。驱动 C++ 直接加载此 YAML，并在初始化 SDK 前检查
+服务和本地接收 IP；统一 launch 仅管理进程。旧安装二进制不包含此配置读取路径，需重新构建。
 
-直接 `ros2 run` 时也应带 `LIVOX_REQUIRE_PTP_SYNC=1`；只有确需非同步实验时，才在
-直接运行中取消它。严格模式不会消除设备复位或重新锁定时的真实时间阶跃。
+直接 `ros2 run livox_ros_driver2 livox_ros_driver2_node` 同样自动读取该 YAML，
+不需要设置 `LIVOX_*` 环境变量。只有确需非同步实验时才显式关闭 `require_ptp_sync`。
+`preflight_check` 默认开启；隔离配置检查可使用 `config_check_only: true`，此模式不初始化
+SDK 或启动雷达。严格模式不会消除设备复位或重新锁定时的真实时间阶跃。
 PTP 改动、雷达复位、主机时间大幅修改前停止里程计/录包；恢复同步并通过验收后，
 重新启动里程计或调用 `/ly_lio/reset`。已有过滤器对回退数据的丢弃不能恢复正确的时间轴。
 
@@ -135,18 +143,18 @@ PTP 是时钟同步，不会解决特征不足造成的几何退化，也不补�
 以后发生闰秒，应按权威 TAI−UTC 更新配置并在停止采集后重新初始化。
 
 本机实际启动雷达后，未转换时点云和 IMU 均比系统 UTC 快约 37 秒；与硬件
-主时钟的 TAI 时标一致。当前 launch 显式设 `ptp_utc_offset=37`，对应环境变量
-`LIVOX_PTP_UTC_OFFSET`，驱动在解析 PTP 包时统一减去该差值，覆盖点云基时和 IMU。
+主时钟的 TAI 时标一致。当前驱动 `config/mid360.yaml` 显式设 `ptp_utc_offset: 37`，
+驱动 C++ 将其直接用于解析 PTP 包时统一减去该差值，覆盖点云基时和 IMU。
 逐点字段改为绝对采样时间减帧基时的相对纳秒，避免原代码把绝对纳秒传给相对解码器。
 
-换成输出 UTC 的固件/主时钟时，必须先测量确认，再启动：
-`./scripts/odom.sh ptp_utc_offset:=0`；原始包监视器相应传
+换成输出 UTC 的固件/主时钟时，必须先测量确认，在驱动 `config/mid360.yaml` 将
+`ptp_utc_offset` 改为 `0` 后重启；原始包监视器相应传
 `--ptp-utc-offset 0`。不能同时更改 PHC 的标准 TAI 时标来掩盖设备时域问题。
 当前 `check_ptp.sh verify` 按本机实测 TAI 配置检查（减 37 秒）。
 
-同链路另有 192.168.1.5 的雷达，当前 launch 设置 `target_ip=192.168.1.3`，
-驱动原始数据入口和设备配置回调都检查 `LIVOX_TARGET_IP`，避免未配置设备自动加入
-共享话题或被自动启用。改变目标时必须同步驱动 JSON 中的 lidar_configs。
+同链路另有 192.168.1.5 的雷达，当前驱动 YAML 设置 `target_ip: 192.168.1.3`，
+驱动原始数据入口和设备配置回调直接使用这一参数，避免未配置设备自动加入共享话题
+或被自动启用。改变目标时必须同步持久 JSON 中的 `lidar_configs`；启动时校验二者一致。
 
 稳态实机 ROS 验收记录见 `ROS实机验收.json`：启动稳定后采样 10 秒，100 帧点云、
 2001 条 IMU，回退/重复/错误年龄/逐点错误均为 0，验收通过。点云 header 接收年龄

@@ -1,5 +1,5 @@
 /**
- * 衍生自 Small Point-LIO；恢复单雷达逐点Point-LIO与历史地图观测。
+ * 衍生自 Small Point-LIO；文档Batch激光与IMU输出观测模型的参数。
  * Copyright (C) 2025 Yingjie Huang
  * Licensed under the MIT License. See LICENSE.txt.
  */
@@ -25,7 +25,16 @@ void Parameters::read_parameters(rclcpp::Node &node) {
     gravity = Eigen::Map<const Eigen::Vector3d>(gravity_values.data());
     extrinsic_T = Eigen::Map<const Eigen::Vector3d>(translation.data());
     extrinsic_R = Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(rotation.data());
+    // 内部始终使用Point-LIO的p_I=R_IL*p_L+t_IL；位置向量在读取边界只换算一次。
+    const auto convention = node.declare_parameter<std::string>("extrinsic_translation_convention", "lidar_in_imu");
+    if (convention == "imu_in_lidar") {
+        extrinsic_T = (-extrinsic_R * extrinsic_T).eval();
+    } else if (convention != "lidar_in_imu") {
+        throw std::invalid_argument("extrinsic_translation_convention必须为imu_in_lidar或lidar_in_imu");
+    }
     extrinsic_est_en = node.declare_parameter<bool>("extrinsic_est_en", false);
+    extrinsic_rotation_cov = node.declare_parameter<double>("extrinsic_rotation_cov", 0.01);
+    extrinsic_translation_cov = node.declare_parameter<double>("extrinsic_translation_cov", 0.01);
     imu_en = node.declare_parameter<bool>("imu_en", true);
     check_satu = node.declare_parameter<bool>("check_satu", true);
     fix_gravity_direction = node.declare_parameter<bool>("fix_gravity_direction", true);
@@ -34,20 +43,25 @@ void Parameters::read_parameters(rclcpp::Node &node) {
     init_max_gyro_std = node.declare_parameter<double>("init_max_gyro_std", 0.02);
     init_max_accel_std = node.declare_parameter<double>("init_max_accel_std", 0.30);
     init_max_gravity_error = node.declare_parameter<double>("init_max_gravity_error", 0.75);
-    // 阈值以输入 IMU 的原始单位给出；保持 Point-LIO 的 99% 饱和判断。
-    satu_acc = node.declare_parameter<double>("satu_acc", 3.0) * 0.99;
-    satu_gyro = node.declare_parameter<double>("satu_gyro", 35.0) * 0.99;
+    // 与《建模.md》一致，达到配置量程的95%即屏蔽该轴；单位沿用输入。
+    satu_acc = node.declare_parameter<double>("satu_acc", 3.0) * 0.95;
+    satu_gyro = node.declare_parameter<double>("satu_gyro", 35.0) * 0.95;
     acc_norm = node.declare_parameter<double>("acc_norm", 1.0);
 
     imu_meas_acc_cov = node.declare_parameter<double>("imu_meas_acc_cov", 0.01);
     imu_meas_omg_cov = node.declare_parameter<double>("imu_meas_omg_cov", 0.01);
-    velocity_cov = node.declare_parameter<double>("velocity_cov", 20.0);
+    // 兼容旧配置但明确告知：文档只给omega/a/bg/ba过程噪声，速度不额外加Q。
+    const double legacy_velocity_cov = node.declare_parameter<double>("velocity_cov", 0.0);
+    if (legacy_velocity_cov != 0.0) {
+        RCLCPP_WARN(node.get_logger(), "velocity_cov已停用：Batch模型仅通过比力/重力/姿态传播速度协方差");
+    }
     acceleration_cov = node.declare_parameter<double>("acceleration_cov", 500.0);
     omg_cov = node.declare_parameter<double>("omg_cov", 1000.0);
     ba_cov = node.declare_parameter<double>("ba_cov", 0.0001);
     process_noise_reference_dt = node.declare_parameter<double>("process_noise_reference_dt", 0.005);
     max_imu_gap = node.declare_parameter<double>("max_imu_gap", 0.1);
     bg_cov = node.declare_parameter<double>("bg_cov", 0.0001);
+    lidar_batch_duration = node.declare_parameter<double>("lidar_batch_duration", 0.0001);
     point_filter_num = node.declare_parameter<int>("point_filter_num", 1);
     space_downsample = node.declare_parameter<bool>("space_downsample", true);
     space_downsample_leaf_size = node.declare_parameter<double>("space_downsample_leaf_size", 0.2);
@@ -60,7 +74,11 @@ void Parameters::read_parameters(rclcpp::Node &node) {
     laser_point_cov = node.declare_parameter<double>("laser_point_cov", 0.01);
     plane_threshold = node.declare_parameter<double>("plane_threshold", 0.1);
     match_sqaured = node.declare_parameter<double>("match_sqaured", 81.0);
-    publish_odometry_without_downsample = node.declare_parameter<bool>("publish_odometry_without_downsample", false);
+    publish_odometry_per_batch = node.declare_parameter<bool>("publish_odometry_per_batch", false);
+    if (node.declare_parameter<bool>("publish_odometry_without_downsample", false)) {
+        RCLCPP_WARN(node.get_logger(), "publish_odometry_without_downsample已弃用；按publish_odometry_per_batch=true输出真实批末位姿");
+        publish_odometry_per_batch = true;
+    }
     if (capacity < 1 || per_voxel < 1 || initial_points < 5 || initial_scans < 1) {
         throw std::invalid_argument("地图容量、每格点数和初始地图帧数必须为正，初始有效点数至少5");
     }
@@ -71,6 +89,10 @@ void Parameters::read_parameters(rclcpp::Node &node) {
 
     const auto positive = [](double value) { return std::isfinite(value) && value > 0; };
     const auto nonnegative = [](double value) { return std::isfinite(value) && value >= 0; };
+    // 配置上限严格小于10ms；实际批长还会被下一IMU采样和扫描末端提前截断。
+    if (!positive(lidar_batch_duration) || lidar_batch_duration >= 0.010) {
+        throw std::invalid_argument("lidar_batch_duration必须为有限秒数且满足0<duration<0.010（严格小于10ms）");
+    }
     if (init_imu_samples < 1 || max_buffer_points < 1 ||
         max_buffer_imu < init_imu_samples || !nonnegative(min_distance) ||
         !positive(max_distance) || min_distance >= max_distance ||
@@ -78,7 +100,8 @@ void Parameters::read_parameters(rclcpp::Node &node) {
         !positive(init_max_gyro_mean) || !positive(init_max_gyro_std) ||
         !positive(init_max_accel_std) || !positive(init_max_gravity_error) ||
         !positive(imu_meas_acc_cov) || !positive(imu_meas_omg_cov) ||
-        !nonnegative(velocity_cov) || !nonnegative(acceleration_cov) || !nonnegative(omg_cov) ||
+        !positive(extrinsic_rotation_cov) || !positive(extrinsic_translation_cov) ||
+        !nonnegative(acceleration_cov) || !nonnegative(omg_cov) ||
         !nonnegative(ba_cov) || !nonnegative(bg_cov) || !positive(process_noise_reference_dt) || !positive(max_imu_gap) ||
         point_filter_num < 1 || !positive(space_downsample_leaf_size) || !positive(map_resolution) ||
         !nonnegative(map_min_point_distance) || !positive(laser_point_cov) ||

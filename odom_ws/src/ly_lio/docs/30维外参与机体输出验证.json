@@ -1,0 +1,110 @@
+{
+  "date": "2026-10-13",
+  "scope": "30维恢复后的激光/IMU外参方向、固定激光安装下在线外参机体输出及协方差、冻结Batch去畸变外参雅可比",
+  "passed": true,
+  "conditions": {
+    "hardware_started": false,
+    "ptp_modified": false,
+    "trajectory_or_zero_drift_test": false,
+    "body_covariance_test": "临时C++程序直接include生产body_output.h，调用body_odometry_from_lidar_mount及生产state::plus；256组非单位旋转及随机SPD30完整交叉协方差；使用中心有限差分计算独立数值J，再核对生产输出的J P J^T",
+    "parameter_conversion_test": "直接调用生产Parameters::read_parameters；来源为源码MID360 YAML中的数值，经原生NodeOptions参数覆盖传入；16组非单位extrinsic_R另外核对t_IL=-R_IL*c_L。此项并不重复证明默认YAML查找/解析入口",
+    "independent_batch_test": "独立NumPy公式，512组含dt=0和非零D的中心有限差分；最大|dt|<10ms。生产h_point的带D公式另经只读源码核对，不将独立公式测试表述为调用生产h_point",
+    "temporary_programs_retained": false
+  },
+  "independent_finite_difference": {
+    "method": "independent NumPy centered finite differences; right SO(3) perturbations; world pose and body twist",
+    "step": 1e-06,
+    "seed": 20261013,
+    "body_cases": 256,
+    "body_columns": 30,
+    "pose_max_abs_error": 4.168889677913512e-10,
+    "twist_max_abs_error": 1.5969484623568064e-09,
+    "block_max_abs_errors": {
+      "pose_position": 3.043112428713357e-10,
+      "twist_position": 0.0,
+      "pose_imu_rotation": 2.511612558556142e-10,
+      "twist_imu_rotation": 9.148180199480827e-10,
+      "pose_extrinsic_rotation": 2.423169997989305e-10,
+      "twist_extrinsic_rotation": 1.5969484623568064e-09,
+      "pose_extrinsic_translation": 4.168889677913512e-10,
+      "twist_extrinsic_translation": 1.1274692290896837e-09,
+      "pose_velocity": 0.0,
+      "twist_velocity": 1.3868844128683833e-09,
+      "pose_angular_velocity": 0.0,
+      "twist_angular_velocity": 1.0156544494321906e-09
+    },
+    "batch_cases": 512,
+    "batch_max_abs_error": 3.376188217885101e-09,
+    "batch_dt_seconds": [
+      0.0,
+      -0.0099
+    ],
+    "batch_dt_zero_reference_error": 1.7763568394002505e-15,
+    "nonidentity_input_conversion_cases": 256,
+    "chip_origin_max_residual": 0.0,
+    "installation_composition_max_residual": 1.6117364266496875e-15,
+    "passed": true
+  },
+  "direct_production_cpp_validation": {
+    "passed": true,
+    "method": "Compiled C++ directly includes production body_output.h; production state::plus for central finite differences; production Parameters::read_parameters using source YAML values via NodeOptions",
+    "state_dimension": 30,
+    "cases": 256,
+    "step": 1e-06,
+    "pose_covariance_max_abs_error": 9.44422144655288e-12,
+    "twist_covariance_max_abs_error": 3.814486504438719e-10,
+    "covariance_max_relative_error": 6.99062106358482e-10,
+    "nominal_output_max_error": 7.869280847691828e-15,
+    "fixed_mount_vs_imu_nominal_max_error": 1.0805156823142815e-14,
+    "fixed_mount_vs_imu_covariance_max_error": 5.551115123125783e-17,
+    "covariance_max_asymmetry": 3.3306690738754696e-16,
+    "pose_covariance_min_eigenvalue": 0.002298706778094867,
+    "twist_covariance_min_eigenvalue": 0.002579641840951919,
+    "source_yaml_translation_conversion_error": 0,
+    "source_chip_origin_residual": 0,
+    "source_mount_composition_error": 0,
+    "production_nonidentity_conversion_cases": 16,
+    "production_nonidentity_conversion_max_error": 0,
+    "source_internal_t_IL": [
+      0.011,
+      0.02329,
+      -0.04412
+    ],
+    "source_t_BI": [
+      -0.017022773349717715,
+      -0.19127957038465473,
+      0.026725316035287508
+    ]
+  },
+  "source_review": {
+    "body_pose_and_twist_external_jacobians_match_independent_derivation": true,
+    "body_from_lidar_mount_recomposes_current_T_BI": true,
+    "static_sensor_tf_targets_lidar_origin_and_uses_fixed_T_BL": true,
+    "explicit_imu_mount_with_online_extrinsics_uses_dynamic_lidar_tf": true,
+    "batch_prior_is_value_copy_before_update": true,
+    "batch_external_jacobians_include_frozen_D": true,
+    "posterior_map_and_registered_points_update_extrinsics_and_keep_motion_compensation_frozen": true,
+    "internal_extrinsics_in_state_used_by_initializer_and_batch": true
+  },
+  "formulas": {
+    "definitions": "A=R_BL,s=A^T*t_BL,r=t-E*s,B=A*E^T,v_I=R^T*v,u=v_I+omega cross r; R/E use right perturbations; pose rotation error is expressed in world; twist is expressed in body",
+    "pose_position_blocks": "J_p=I,J_theta=-R*hat(r),J_epsilon=R*E*hat(s),J_t=R",
+    "pose_rotation_blocks": "J_theta=R,J_epsilon=R*E",
+    "twist_linear_blocks": "J_theta=B*hat(v_I),J_epsilon=A*hat(E^T*u)+B*hat(omega)*E*hat(s),J_t=B*hat(omega),J_v=B*R^T,J_omega=-B*hat(r)",
+    "twist_angular_blocks": "J_epsilon=A*hat(E^T*omega),J_omega=B",
+    "batch_predicted_measurement": "q=D*(E*p_L+t)+b,C=R^T*n; H=[n^T,(q cross C)^T,(p_L cross (E^T*D^T*C))^T,(D^T*C)^T]; D/b frozen at batch prior",
+    "input_chip_position_conversion": "extrinsic_T=c_L,extrinsic_translation_convention=imu_in_lidar => internal t_IL=-R_IL*c_L; R_IL*c_L+t_IL=0",
+    "installation_composition": "R_BI=R_BL*R_IL^T,t_BI=t_BL-R_BI*t_IL => T_BI*T_IL=T_BL"
+  },
+  "source_sha256": {
+    "odom_ws/src/ly_lio/src/ly_lio/body_output.h": "25a5de74f1cc5a090c8dfecac055d1d88d68cf7676f5cd78132cced4b9c85816",
+    "odom_ws/src/ly_lio/src/ly_lio/eskf.h": "b40e2e362b98df28f8f8ca003e52ae78120e9d731f15c55dfd1b9460ef21c6cf",
+    "odom_ws/src/ly_lio/src/ly_lio/parameters.cpp": "600d1960a6b0d2731596643ffd4e0624f4e9079774ee09e5ec2d0b295726c52b",
+    "odom_ws/src/ly_lio/src/ly_lio/estimator.cpp": "09bb5de956d8c462b4ead472b205135cef0eccb530a3291bc44f5e360c16f8b9",
+    "odom_ws/src/ly_lio/src/ly_lio/ly_lio.cpp": "03cb4cca3b8e99f18cf2baea0a39ba6a5072aa4a7cbd4d3580f235a2df8f8cee",
+    "odom_ws/src/ly_lio/src/ly_lio_node.cpp": "86c7192758d2471ee0f2f9d0fe289659b1813566a54575a272154d68e0a6bf64",
+    "odom_ws/src/ly_lio/config/mid360.yaml": "3627c02926de86a7ca80145dae9aed1ff24c3d1cdce1488f4114332e72041956",
+    "pcl_ws/config/lidar2baselink.yaml": "65270afc39ae7f2db83669bc3eef76d2274b198d8cf8563aa136a3564dfb9766"
+  },
+  "limits": "数学、源码路径和协方差验证通过不证明实际运动轨迹精度或零漂改善；本轮未采集实机数据。"
+}

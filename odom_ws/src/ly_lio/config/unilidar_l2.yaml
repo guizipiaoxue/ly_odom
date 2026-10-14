@@ -8,10 +8,13 @@ ly_lio:
     body_frame: unilidar_imu
     imu_frame: unilidar_imu          # 输出原点与 IMU 相同，此例无需安装外参。
     odom_frame: odom
+    # 显式清空 MID360 默认安装文件，防止继承与 L2 无关的机体外参。
+    body_extrinsic_path: ''
     # Unitree timestamp 是相对包头时间的秒偏移。
     timestamp_mode: relative
     timestamp_scale: 1.0
-    # 逐点 Point-LIO：保留真实测量点及其时间，匹配历史地图中的局部平面。
+    # 文档Batch模型：真实点补偿到批末，联合匹配历史地图平面；不跨IMU事件。
+    lidar_batch_duration: 0.002   # s；L2未参与MID360调参，保留2ms；必须严格<10ms。
     point_filter_num: 1
     space_downsample: true
     space_downsample_leaf_size: 0.20
@@ -22,7 +25,7 @@ ly_lio:
     # 静止标定完成后再收集5帧建立初始地图；不使用标定前的扫描。
     init_map_size: 100
     init_map_scans: 5
-    laser_point_cov: 0.01
+    laser_point_cov: 0.01          # m²；各向同性三维点噪声投影到平面残差。
     plane_threshold: 0.10
     match_sqaured: 81.0
 
@@ -36,26 +39,30 @@ ly_lio:
     gravity: [0.0, 0.0, -9.81]
     fix_gravity_direction: true     # 静止采集后估计重力方向；运动启动时设为 false。
     init_imu_samples: 200
-    check_satu: true
+    check_satu: true                # 达到下面配置量程的95%即屏蔽对应轴。
     satu_acc: 30.0                   # 输入单位 m/s²；按设备实际量程配置。
     satu_gyro: 35.0                 # rad/s
     acc_norm: 9.81                  # 输入为 m/s²，静止比力模长设为 9.81。
 
-    extrinsic_est_en: false
+    # L2沿用Point-LIO平移约定：激光原点在IMU系的位置；显式覆盖MID360约定。
+    extrinsic_translation_convention: lidar_in_imu
     extrinsic_T: [0.0, 0.0, 0.0]
     extrinsic_R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    extrinsic_est_en: false
+    extrinsic_rotation_cov: 0.01
+    extrinsic_translation_cov: 0.01
 
     # R：IMU观测噪声；激光点到地图平面噪声见 laser_point_cov。
     imu_meas_acc_cov: 0.01
     imu_meas_omg_cov: 0.01
-    # Q：速度、比力、角速度及两个零偏的离散过程噪声。
-    velocity_cov: 20.0
+    # Q：只有比力、角速度及两个零偏；按参考周期转换方差率。
+    process_noise_reference_dt: 0.005
     acceleration_cov: 500.0
     omg_cov: 1000.0
     ba_cov: 0.0001
     bg_cov: 0.0001
 
-    publish_odometry_without_downsample: false
+    publish_odometry_per_batch: false
     publish_tf: true
     publish_path: true
     path_max_poses: 10000

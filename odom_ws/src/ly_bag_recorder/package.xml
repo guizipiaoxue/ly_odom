@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>ly_bag_recorder</name>
+  <version>0.1.0</version>
+  <description>直接读取独立YAML的原生ROS 2全话题录包节点。</description>
+  <maintainer email="52013141312a@gmail.com">hustlyrm</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>ament_index_cpp</depend>
+  <depend>keyboard_handler</depend>
+  <depend>rclcpp</depend>
+  <depend>rmw</depend>
+  <depend>rosbag2_cpp</depend>
+  <depend>rosbag2_transport</depend>
+  <depend>rosbag2_storage</depend>
+  <depend>yaml_cpp_vendor</depend>
+  <depend>yaml-cpp</depend>
+  <exec_depend>rosbag2_storage_default_plugins</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

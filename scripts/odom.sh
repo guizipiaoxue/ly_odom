@@ -11,17 +11,17 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 用法：./scripts/odom.sh [ROS launch 参数]
 启动 MID360 驱动、pcl_publisher、ly_lio，并将全部 ROS 话题录制到 rosbag。
 Ctrl+C 统一停止录包并退出 ROS 节点，等待录包完成写盘后再关闭终端。
-PTP 由 systemd 开机自启，本脚本只检查服务，不启动、重启或停止 PTP。
+PTP 由 systemd 开机自启，驱动代码只读检查服务，不启动、重启或停止 PTP。
 里程计直接订阅原始话题，保留 /bashlink/pcl、/baselink/imu 发布。
-转换与里程计共用 pcl_ws/config/lidar2baselink.yaml，里程计参数读取 ly_lio/config/mid360.yaml。
-可覆盖配置：./scripts/odom.sh config:=/绝对路径/里程计.yaml config_path:=/绝对路径/外参.yaml
-更换网卡：./scripts/odom.sh ptp_interface:=enp86s0
-回放 rosbag 或使用外部驱动：./scripts/odom.sh start_lidar:=false（跳过 PTP/网卡检查）
-默认保存到仓库 bags/odom_日期_时间_随机后缀/，终端会显示完整路径。
-更改保存目录：./scripts/odom.sh bag_dir:=/绝对路径/录包目录
+算法/IMU/地图/终端：odom_ws/src/ly_lio/config/mid360.yaml
+Livox参数：livox_sdk/src/livox_ros_driver2/config/mid360.yaml
+Livox网络：livox_sdk/src/livox_ros_driver2/config/MID360_config.json（SDK原生格式）
+安装外参：pcl_ws/config/lidar2baselink.yaml
+录包参数与QoS：config/rosbag.yaml（ROS工作区外）
+节点代码直接读取配置；本脚本只加载环境并管理进程，不解析/生成/注入配置。
+回放已有rosbag：./scripts/odom.sh start_lidar:=false record_bag:=false
+默认录包保存到仓库 bags/odom_日期_时间_随机后缀/，保存目录在config/rosbag.yaml修改。
 关闭录包：./scripts/odom.sh record_bag:=false
-关闭里程计终端面板：./scripts/odom.sh terminal_enabled:=false
-保留终端日志不清屏：./scripts/odom.sh terminal_clear_screen:=false terminal_rate:=1.0
 EOF
     exit 0
 fi
@@ -32,27 +32,15 @@ if [[ ! -f /opt/ros/humble/setup.bash ]]; then
     exit 1
 fi
 workspaces=(pcl_ws odom_ws)
-# 回放模式不要求存在 Livox 构建产物；若已安装，加载可选CustomMsg的运行库。
-# 加载消息库不会启动驱动；是否启动硬件仍由launch中的start_lidar决定。
-start_lidar=true
-for arg in "$@"; do
-    case "$arg" in
-        start_lidar:=*) start_lidar="${arg#start_lidar:=}" ;;
-    esac
-done
-case "$start_lidar" in
-    true|True|1) workspaces=(livox_sdk "${workspaces[@]}") ;;
-    false|False|0)
-        if [[ -f "$PROJECT_ROOT/livox_sdk/install/local_setup.bash" ]]; then
-            workspaces=(livox_sdk "${workspaces[@]}")
-        fi
-        ;;
-    *) echo '错误：start_lidar 只能为 true/false 或 1/0。' >&2; exit 2 ;;
-esac
+# 是否启硬件由launch开关决定；各节点自行读取配置。
+# Livox已安装则加载可选CustomMsg库；回放不启动驱动或查询PTP。
+if [[ -f "$PROJECT_ROOT/livox_sdk/install/local_setup.bash" ]]; then
+    workspaces=(livox_sdk "${workspaces[@]}")
+fi
 for workspace in "${workspaces[@]}"; do
     if [[ ! -f "$PROJECT_ROOT/$workspace/install/local_setup.bash" ]]; then
         package=pcl_publisher
-        [[ "$workspace" != odom_ws ]] || package=ly_lio
+        [[ "$workspace" != odom_ws ]] || package="ly_lio ly_bag_recorder"
         [[ "$workspace" != livox_sdk ]] || package=livox_ros_driver2
         echo "错误：$workspace 尚未构建，请先执行：" >&2
         if [[ "$workspace" == livox_sdk ]]; then
@@ -71,7 +59,7 @@ source /opt/ros/humble/setup.bash
 for workspace in "${workspaces[@]}"; do
     source "$PROJECT_ROOT/$workspace/install/local_setup.bash"
 done
-packages=(pcl_publisher ly_lio)
+packages=(pcl_publisher ly_lio ly_bag_recorder)
 [[ "${workspaces[0]}" != livox_sdk ]] || packages=(livox_ros_driver2 "${packages[@]}")
 for package in "${packages[@]}"; do
     if ! ros2 pkg prefix "$package" >/dev/null; then

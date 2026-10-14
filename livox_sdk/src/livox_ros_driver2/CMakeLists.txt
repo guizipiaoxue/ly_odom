@@ -260,6 +260,7 @@ else(ROS_EDITION STREQUAL "ROS2")
   # livox ros2 driver target
   ament_auto_add_library(${PROJECT_NAME} SHARED
     src/livox_ros_driver2.cpp
+    src/driver_config.cpp
     src/lddc.cpp
     src/driver_node.cpp
     src/lds.cpp

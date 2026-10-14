@@ -17,10 +17,6 @@ LyLio::LyLio(rclcpp::Node &node) {
     Q = estimator.process_noise_cov();
     reset();
 }
-void LyLio::restore_extrinsics() {
-    estimator.kf.x.offset_T_L_I = parameters.extrinsic_T;
-    estimator.kf.x.offset_R_L_I = parameters.extrinsic_R;
-}
 void LyLio::clear_tracking_diagnostics() {
     // 自动重建保留累计处理/拒绝/重建数，但不把上一轨迹的末帧和耗时显示成当前状态。
     diagnostic_state.last_input_points = diagnostic_state.last_tracking_points = diagnostic_state.last_matched_points = 0;
@@ -32,7 +28,6 @@ void LyLio::clear_tracking_diagnostics() {
 void LyLio::reset() {
     preprocess.reset();
     estimator.reset();
-    restore_extrinsics();
     time_current = 0.0;
     calibration_time = last_odometry_time = -1.0;
     imu_calibrated = is_init = false;
@@ -70,8 +65,8 @@ void LyLio::on_imu_callback(const common::ImuMsg &imu) {
 }
 Eigen::Vector3f LyLio::point_to_world(const Eigen::Vector3f &point) const {
     const auto &x = estimator.kf.x;
-    const Eigen::Matrix3d &E = parameters.extrinsic_est_en ? x.offset_R_L_I : estimator.Lidar_R_wrt_IMU;
-    const Eigen::Vector3d &t = parameters.extrinsic_est_en ? x.offset_T_L_I : estimator.Lidar_T_wrt_IMU;
+    const Eigen::Matrix3d &E = x.offset_R_L_I;
+    const Eigen::Vector3d &t = x.offset_T_L_I;
     return (x.rotation * (E * point.cast<double>() + t) + x.position).cast<float>();
 }
 
@@ -108,7 +103,6 @@ bool LyLio::initialize() {
         if (imu_calibrated) {
             // 建初图期间发生运动：固定原点假设已失效，整批清空，重新等静止标定。
             estimator.reset();
-            restore_extrinsics();
             preprocess.discard_scans();
             initial_map_scans = initial_map_points = 0;
             imu_calibrated = false;
@@ -155,7 +149,7 @@ bool LyLio::initialize() {
                 preprocess.imu_deque.pop_front();
             }
             is_init = true;
-            RCLCPP_INFO(rclcpp::get_logger("ly_lio"), "初始地图完成：%zu帧、%zu个有间距真实点，开始逐点Point-LIO", initial_map_scans, initial_map_points);
+            RCLCPP_INFO(rclcpp::get_logger("ly_lio"), "初始地图完成：%zu帧、%zu个有间距真实点，开始Batch激光/IMU联合估计", initial_map_scans, initial_map_points);
             return true;
         }
     }
@@ -170,64 +164,108 @@ void LyLio::process_scan(const ScanFrame &scan) {
     map_increment.reserve(scan.points.size());
     registered.reserve(scan.dense_points.size());
     size_t laser_index = 0, dense_index = 0;
-    // 四种事件按采样时间合并。同一时刻：先IMU，再激光观测，再稠密点，再scan_end。
-    // 队列之一耗尽不会让其他事件停止；完全处理一帧再将其后验点加入历史地图。
+    std::vector<DeskewedPoint> batch_points;
+    std::vector<DeskewedPoint> batch_dense;
+    // 一批内统一线性化。IMU事件之前先结束旧批，同stamp先IMU后激光。
+    // 每个批末取实际点时间，不用人为网格给旧状态盖时间戳；地图整扫描冻结。
+    // F在区间起点状态上线性化，先传播P再传播x，二者到达同一观测时刻。
     for (;;) {
+        while (laser_index < scan.points.size() && scan.points[laser_index].timestamp < time_current) { ++laser_index; }
+        while (dense_index < scan.dense_points.size() && scan.dense_points[dense_index].timestamp < time_current) { ++dense_index; }
         const double infinity = std::numeric_limits<double>::infinity();
         const double imu_time = parameters.imu_en && !preprocess.imu_deque.empty() ? preprocess.imu_deque.front().timestamp : infinity;
         const double laser_time = laser_index < scan.points.size() ? scan.points[laser_index].timestamp : infinity;
         const double dense_time = dense_index < scan.dense_points.size() ? scan.dense_points[dense_index].timestamp : infinity;
-        if (imu_time <= laser_time && imu_time <= dense_time && imu_time <= scan.timestamp_end) {
+        const double first_point_time = std::min(laser_time, dense_time);
+        if (imu_time <= first_point_time && imu_time <= scan.timestamp_end) {
             const auto imu = preprocess.imu_deque.front();
             preprocess.imu_deque.pop_front();
             if (imu.timestamp < time_current) { continue; }
-            estimator.kf.predict_state(imu.timestamp);
             estimator.kf.predict_cov(imu.timestamp, Q, parameters.process_noise_reference_dt);
+            estimator.kf.predict_state(imu.timestamp);
             estimator.angular_velocity = imu.angular_velocity;
             estimator.linear_acceleration = imu.linear_acceleration;
             estimator.kf.update_imu();
             time_current = imu.timestamp;
-        } else if (laser_time <= dense_time && laser_time <= scan.timestamp_end) {
-            const auto &point = scan.points[laser_index++];
-            if (point.timestamp < time_current) { continue; }
-            estimator.kf.predict_state(point.timestamp);
-            estimator.kf.predict_cov(point.timestamp, Q, parameters.process_noise_reference_dt);
-            estimator.point_lidar_frame = point.position;
-            ++tracking_points;
-            if (estimator.kf.update_point()) { ++matched_points; }
-            time_current = point.timestamp;
-            // 必须重新用后验状态计算入图坐标；h_point里的预测坐标不是最终结果。
-            map_increment.push_back(point_to_world(point.position));
-            if (parameters.publish_odometry_without_downsample) { publish_odometry(time_current); }
-        } else if (dense_time <= scan.timestamp_end) {
-            const auto &point = scan.dense_points[dense_index++];
-            if (point.timestamp < time_current) { continue; }
-            estimator.kf.predict_state(point.timestamp);
-            time_current = point.timestamp;
-            registered.push_back(point_to_world(point.position));
-        } else {
-            estimator.kf.predict_state(scan.timestamp_end);
-            estimator.kf.predict_cov(scan.timestamp_end, Q, parameters.process_noise_reference_dt);
-            time_current = scan.timestamp_end;
-            for (const auto &point : map_increment) { estimator.ivox->add_point(point); }
-            publish_odometry(scan.timestamp_end);
-            if (pointcloud_callback && !registered.empty()) { pointcloud_callback(scan.timestamp_end, registered); }
-            // 计时包含地图插入、scan_end回调及其同步序列化；不含适配和预处理。
-            const double elapsed_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - processing_start).count();
-            ++diagnostic_state.scans_processed;
-            ++processing_epoch_scans;
-            processing_epoch_total_ms += elapsed_ms;
-            diagnostic_state.last_input_points = scan.input_points;
-            diagnostic_state.last_tracking_points = tracking_points;
-            diagnostic_state.last_matched_points = matched_points;
-            diagnostic_state.last_scan_start = scan.timestamp_start;
-            diagnostic_state.last_scan_end = scan.timestamp_end;
-            diagnostic_state.last_processing_ms = elapsed_ms;
-            diagnostic_state.mean_processing_ms = processing_epoch_total_ms / static_cast<double>(processing_epoch_scans);
-            diagnostic_state.max_processing_ms = std::max(diagnostic_state.max_processing_ms, elapsed_ms);
-            return;
+            continue;
         }
+        if (first_point_time <= scan.timestamp_end) {
+            const double limit = std::min(first_point_time + parameters.lidar_batch_duration, scan.timestamp_end);
+            size_t laser_end = laser_index, dense_end = dense_index;
+            double batch_end = first_point_time;
+            const auto in_batch = [&](const common::Point &point) {
+                return point.timestamp <= limit && point.timestamp < imu_time;
+            };
+            while (laser_end < scan.points.size() && in_batch(scan.points[laser_end])) {
+                batch_end = std::max(batch_end, scan.points[laser_end++].timestamp);
+            }
+            while (dense_end < scan.dense_points.size() && in_batch(scan.dense_points[dense_end])) {
+                batch_end = std::max(batch_end, scan.dense_points[dense_end++].timestamp);
+            }
+            estimator.kf.predict_cov(batch_end, Q, parameters.process_noise_reference_dt);
+            estimator.kf.predict_state(batch_end);
+            time_current = batch_end;
+            // 式3.44–3.47：所有点先变至IMU原点，再补偿到批末IMU系。
+            // v存于世界系，必须先用R_end^T转轴；exp(0)也合法，无需omega归一化。
+            // 用同一个批末先验冻结去畸变，联合更新后不重新用omega/v补偿。
+            const state prior = estimator.kf.x;
+            const Eigen::Vector3d omega = prior.omg;
+            const Eigen::Vector3d velocity_imu = prior.rotation.transpose() * prior.velocity;
+            const auto deskew = [&](const common::Point &point) -> DeskewedPoint {
+                const double dt = point.timestamp - batch_end;
+                DeskewedPoint result;
+                result.point_lidar = point.position.cast<double>();
+                result.rotation_to_end = exp<double>(omega * dt);
+                result.point_imu = result.rotation_to_end *
+                    (prior.offset_R_L_I * result.point_lidar + prior.offset_T_L_I) + velocity_imu * dt;
+                return result;
+            };
+            batch_points.clear();
+            batch_dense.clear();
+            for (size_t i = laser_index; i < laser_end; ++i) { batch_points.push_back(deskew(scan.points[i])); }
+            for (size_t i = dense_index; i < dense_end; ++i) { batch_dense.push_back(deskew(scan.dense_points[i])); }
+            tracking_points += batch_points.size();
+            matched_points += estimator.update_lidar_batch(batch_points);
+            const auto &posterior = estimator.kf.x;
+            const auto posterior_point = [&](const DeskewedPoint &point) -> Eigen::Vector3d {
+                if (!parameters.extrinsic_est_en) { return point.point_imu; }
+                // 仅更新标定部分，冻结本批的运动补偿，注册云与入图点使用同一后验。
+                return point.point_imu + point.rotation_to_end *
+                    ((posterior.offset_R_L_I - prior.offset_R_L_I) * point.point_lidar +
+                     posterior.offset_T_L_I - prior.offset_T_L_I);
+            };
+            for (const auto &point : batch_points) {
+                map_increment.push_back((posterior.rotation * posterior_point(point) + posterior.position).cast<float>());
+            }
+            for (const auto &point : batch_dense) {
+                registered.push_back((posterior.rotation * posterior_point(point) + posterior.position).cast<float>());
+            }
+            laser_index = laser_end;
+            dense_index = dense_end;
+            if (parameters.publish_odometry_per_batch) { publish_odometry(batch_end); }
+            continue;
+        }
+        // 距离过滤后即便末段没有点，仍推进到原始有效末点，保证输出时间定义不变。
+        estimator.kf.predict_cov(scan.timestamp_end, Q, parameters.process_noise_reference_dt);
+        estimator.kf.predict_state(scan.timestamp_end);
+        time_current = scan.timestamp_end;
+        for (const auto &point : map_increment) { estimator.ivox->add_point(point); }
+        publish_odometry(scan.timestamp_end);
+        if (pointcloud_callback && !registered.empty()) { pointcloud_callback(scan.timestamp_end, registered); }
+        const double elapsed_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - processing_start).count();
+        ++diagnostic_state.scans_processed;
+        ++processing_epoch_scans;
+        diagnostic_state.last_input_points = scan.input_points;
+        diagnostic_state.last_tracking_points = tracking_points;
+        diagnostic_state.last_matched_points = matched_points;
+        diagnostic_state.last_processing_ms = elapsed_ms;
+        processing_epoch_total_ms += elapsed_ms;
+        diagnostic_state.mean_processing_ms = processing_epoch_total_ms / static_cast<double>(processing_epoch_scans);
+        diagnostic_state.max_processing_ms = std::max(diagnostic_state.max_processing_ms, elapsed_ms);
+        diagnostic_state.last_scan_start = scan.timestamp_start;
+        diagnostic_state.last_scan_end = scan.timestamp_end;
+        return;
     }
 }
 
@@ -236,7 +274,6 @@ void LyLio::handle_once() {
         // 输入缺段或未处理IMU被迫裁剪后，当前轨迹没有连续惯性覆盖；明确重启
         // 标定/初图，不用旧omega/a跨大间隔积分，更不伪造中间100Hz输出。
         estimator.reset();
-        restore_extrinsics();
         preprocess.discard_scans();
         time_current = 0.0;
         calibration_time = last_odometry_time = -1.0;

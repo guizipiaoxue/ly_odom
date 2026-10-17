@@ -44,13 +44,10 @@ ly_lio:
     satu_gyro: 35.0                 # rad/s
     acc_norm: 9.81                  # 输入为 m/s²，静止比力模长设为 9.81。
 
-    # L2沿用Point-LIO平移约定：激光原点在IMU系的位置；显式覆盖MID360约定。
-    extrinsic_translation_convention: lidar_in_imu
+    # 24维固定外参。T为IMU原点在雷达坐标系的位置（m），内部转换t_IL=-R_IL*T。
+    extrinsic_translation_convention: imu_in_lidar
     extrinsic_T: [0.0, 0.0, 0.0]
     extrinsic_R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-    extrinsic_est_en: false
-    extrinsic_rotation_cov: 0.01
-    extrinsic_translation_cov: 0.01
 
     # R：IMU观测噪声；激光点到地图平面噪声见 laser_point_cov。
     imu_meas_acc_cov: 0.01

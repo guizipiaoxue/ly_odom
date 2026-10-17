@@ -33,11 +33,10 @@ namespace ly_lio {
         double acc_norm;
 
 
+        // 固定lidar→IMU标定；读取时将YAML中IMU在激光系的位置换算为t_IL。
+        // 内部始终满足p_I=extrinsic_R*p_L+extrinsic_T，不进入24维状态/P。
         Eigen::Vector3d extrinsic_T;
         Eigen::Matrix3d extrinsic_R;
-        bool extrinsic_est_en = false;
-        double extrinsic_rotation_cov = 0.01;     // rad²，在线外参的初始先验。
-        double extrinsic_translation_cov = 0.01;  // m²，在线外参的初始先验。
 
         double imu_meas_acc_cov;
         double imu_meas_omg_cov;
@@ -51,7 +50,7 @@ namespace ly_lio {
         double max_imu_gap = 0.1;  // s，超限/队列截断后重新初始化，禁止跨缺段积分。
 
         // 文档Batch模型：保留真实点时间，补偿到批末后联合匹配历史地图。
-        double lidar_batch_duration = 0.0001;  // s = 0.1ms；严格<10ms，遇IMU采样提前结束。
+        double lidar_batch_duration = 0.001;  // s = 1ms；严格<10ms，遇IMU采样提前结束。
         int point_filter_num = 1;
         bool space_downsample = true;
         double space_downsample_leaf_size = 0.2;

@@ -1,0 +1,26 @@
+{
+  "state_dimension": 24,
+  "random_cases": 240,
+  "point_H_max_error": 1.94877e-09,
+  "body_pose_covariance_max_error": 1.21096e-09,
+  "body_twist_covariance_max_error": 5.60216e-09,
+  "large_batch_input": 2101,
+  "large_batch_matched": 2101,
+  "independent_dense_ESKF_checks": {
+    "batch_cases": 96,
+    "saturation_masks": 64,
+    "propagation_cases": 96,
+    "batch_P_max_error": 2.04e-15,
+    "imu_P_max_error": 1.67e-16,
+    "propagation_P_max_error": 2.22e-16
+  },
+  "passed": true,
+  "independent_point_H_and_large_batch_check": {
+    "point_cases": 180,
+    "H_components": 2160,
+    "max_H_finite_difference_error": 1.2172e-09,
+    "large_batch_input": 2101,
+    "large_batch_matched": 2101,
+    "finite_state_covariance": true
+  }
+}

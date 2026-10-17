@@ -14,24 +14,20 @@ namespace ly_lio {
     struct state {
         using value_type = double;
 
-        // 恢复Point-LIO输出观测模型的30维误差顺序：p,R,R_IL,t_IL,v,omega,a,g,bg,ba。
-        // R_IL/t_IL将激光坐标转换到IMU坐标；固定模式也保留状态载体，但不估计这6维。
-        constexpr static int DIM = 30;
+        // Point-LIO惯性输出模型的24维误差顺序：p,R,v,omega,a,g,bg,ba。
+        // 激光-IMU外参是固定参数，不进入滤波状态或协方差。
+        constexpr static int DIM = 24;
         constexpr static int position_index = 0;
         constexpr static int rotation_index = 3;
-        constexpr static int offset_R_L_I_index = 6;
-        constexpr static int offset_T_L_I_index = 9;
-        constexpr static int velocity_index = 12;
-        constexpr static int omg_index = 15;
-        constexpr static int acceleration_index = 18;
-        constexpr static int gravity_index = 21;
-        constexpr static int bg_index = 24;
-        constexpr static int ba_index = 27;
+        constexpr static int velocity_index = 6;
+        constexpr static int omg_index = 9;
+        constexpr static int acceleration_index = 12;
+        constexpr static int gravity_index = 15;
+        constexpr static int bg_index = 18;
+        constexpr static int ba_index = 21;
 
         Eigen::Matrix<value_type, 3, 1> position = Eigen::Matrix<value_type, 3, 1>::Zero();        // 位置
         Eigen::Matrix<value_type, 3, 3> rotation = Eigen::Matrix<value_type, 3, 3>::Identity();    // 旋转
-        Eigen::Matrix<value_type, 3, 3> offset_R_L_I = Eigen::Matrix<value_type, 3, 3>::Identity();// 激光到IMU的旋转
-        Eigen::Matrix<value_type, 3, 1> offset_T_L_I = Eigen::Matrix<value_type, 3, 1>::Zero();    // 激光原点在IMU系的位置
         Eigen::Matrix<value_type, 3, 1> velocity = Eigen::Matrix<value_type, 3, 1>::Zero();        // 速度
         Eigen::Matrix<value_type, 3, 1> omg = Eigen::Matrix<value_type, 3, 1>::Zero();             // 角速度
         Eigen::Matrix<value_type, 3, 1> acceleration = Eigen::Matrix<value_type, 3, 1>::Zero();    // 加速度
@@ -44,8 +40,6 @@ namespace ly_lio {
         inline void plus(const Eigen::Matrix<value_type, DIM, 1> &vec) {
             position += vec.segment<3>(position_index);
             rotation *= exp<value_type>(vec.segment<3>(rotation_index));
-            offset_R_L_I *= exp<value_type>(vec.segment<3>(offset_R_L_I_index));
-            offset_T_L_I += vec.segment<3>(offset_T_L_I_index);
             velocity += vec.segment<3>(velocity_index);
             omg += vec.segment<3>(omg_index);
             acceleration += vec.segment<3>(acceleration_index);
@@ -58,17 +52,15 @@ namespace ly_lio {
     struct point_measurement_result {
         bool valid = false;
         state::value_type z = 0.0;  // 观测减预测：负的点到地图平面有符号距离。
-        // 直接观测[p,R,R_IL,t_IL,v,omega]，其余状态通过完整P的交叉项更新。
-        Eigen::Matrix<state::value_type, 1, 18> H = Eigen::Matrix<state::value_type, 1, 18>::Zero();
+        Eigen::Matrix<state::value_type, 1, 12> H = Eigen::Matrix<state::value_type, 1, 12>::Zero();
         state::value_type variance = 0.01;
     };
 
     struct batch_measurement_result {
         size_t matched_points = 0;
-        bool estimate_extrinsics = false;
         // 全部点共享批末先验；包括补偿对v/omega的直接导数及其交叉信息。
-        Eigen::Matrix<double, 18, 18> information = Eigen::Matrix<double, 18, 18>::Zero();
-        Eigen::Matrix<double, 18, 1> information_vector = Eigen::Matrix<double, 18, 1>::Zero();
+        Eigen::Matrix<double, 12, 12> information = Eigen::Matrix<double, 12, 12>::Zero();
+        Eigen::Matrix<double, 12, 1> information_vector = Eigen::Matrix<double, 12, 1>::Zero();
     };
 
     struct imu_measurement_result {
@@ -93,41 +85,30 @@ namespace ly_lio {
             const Eigen::Matrix<double, state::DIM, 1> &delta,
             const Eigen::Matrix<double, state::DIM, state::DIM> &posterior) {
             if (!delta.allFinite() || !posterior.allFinite()) { return false; }
-            // 名义R和R_IL均采用右扰动注入；两个SO(3)切空间及全部交叉块须两侧reset。
+            // 名义R采用右扰动注入；SO(3)切空间及全部交叉块须两侧reset。
             const Eigen::Matrix3d J_rotation = A_matrix<double>(-delta.template segment<3>(state::rotation_index));
-            const Eigen::Matrix3d J_extrinsic = A_matrix<double>(-delta.template segment<3>(state::offset_R_L_I_index));
             auto left = posterior.eval();
             left.template middleRows<3>(state::rotation_index) = J_rotation * posterior.template middleRows<3>(state::rotation_index);
-            left.template middleRows<3>(state::offset_R_L_I_index) = J_extrinsic * posterior.template middleRows<3>(state::offset_R_L_I_index);
             auto reset = left.eval();
             reset.template middleCols<3>(state::rotation_index) = left.template middleCols<3>(state::rotation_index) * J_rotation.transpose();
-            reset.template middleCols<3>(state::offset_R_L_I_index) = left.template middleCols<3>(state::offset_R_L_I_index) * J_extrinsic.transpose();
             if (!reset.allFinite()) { return false; }
             x.plus(delta);
             P = (0.5 * (reset + reset.transpose())).eval();
             return true;
         }
 
-        template <int ObservationDimension>
         inline bool update_lidar_information(const batch_measurement_result &measurement) {
+            constexpr int ObservationDimension = 12;
             using observation_matrix = Eigen::Matrix<double, ObservationDimension, ObservationDimension>;
-            static_assert(ObservationDimension == 12 || ObservationDimension == 18);
-            // 固定外参跳过P中严格为零的6维，选择[p,R,v,omega]；在线选择前18维。
-            const auto state_index = [](int i) {
-                if constexpr (ObservationDimension == 12) { return i < 6 ? i : i + 6; }
-                else { return i; }
-            };
             observation_matrix observed_covariance, information;
             Eigen::Matrix<double, ObservationDimension, 1> information_vector;
             Eigen::Matrix<double, state::DIM, ObservationDimension> cross_covariance;
             for (int i = 0; i < ObservationDimension; ++i) {
-                const int row = state_index(i);
-                cross_covariance.col(i) = P.col(row);
-                information_vector(i) = measurement.information_vector(row);
+                cross_covariance.col(i) = P.col(i);
+                information_vector(i) = measurement.information_vector(i);
                 for (int j = 0; j < ObservationDimension; ++j) {
-                    const int col = state_index(j);
-                    observed_covariance(i, j) = P(row, col);
-                    information(i, j) = measurement.information(row, col);
+                    observed_covariance(i, j) = P(i, j);
+                    information(i, j) = measurement.information(i, j);
                 }
             }
             Eigen::LLT<observation_matrix> prior_factor(observed_covariance);
@@ -206,14 +187,13 @@ namespace ly_lio {
             }
         }
 
-        // 与把全部点的H/r按行堆叠后执行一次Kalman更新等价；完整30维交叉协方差
-        // 将激光信息传给速度、比力、重力和IMU零偏，在线模式同时更新激光外参。
+        // 与把整批激光残差/H按行堆叠后执行一次Kalman更新等价；完整24维交叉协方差
+        // 将直接作用于[p,R,v,omega]的激光信息传给比力、重力和IMU零偏。
         inline bool update_lidar_batch(const batch_measurement_result &measurement) {
             if (!measurement.matched_points || !P.allFinite() || !measurement.information.allFinite() ||
                 !measurement.information_vector.allFinite()) { return false; }
-            // 固定模式解12维[p,R,v,omega]，在线模式解18维，状态/P仍为30维。
-            return measurement.estimate_extrinsics ? update_lidar_information<18>(measurement) :
-                update_lidar_information<12>(measurement);
+            // 只解直接观测的前12维[p,R,v,omega]，更新完整24维状态/P。
+            return update_lidar_information(measurement);
         }
 
         inline bool update_imu() {

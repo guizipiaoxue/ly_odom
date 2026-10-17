@@ -14,9 +14,6 @@ namespace ly_lio {
 
     void Estimator::reset() {
         kf.x = state();
-        // reset须恢复配置外参，不能把上一段在线标定结果当新odom的隐式先验。
-        kf.x.offset_R_L_I = Lidar_R_wrt_IMU;
-        kf.x.offset_T_L_I = Lidar_T_wrt_IMU;
         ivox = std::make_shared<VoxelMap>(parameters->map_resolution, parameters->map_capacity,
             parameters->map_max_points_per_voxel, parameters->map_min_point_distance);
         nearest_points.clear();
@@ -25,25 +22,15 @@ namespace ly_lio {
         kf.P.block<3, 3>(state::gravity_index, state::gravity_index).diagonal().fill(0.0001);
         kf.P.block<3, 3>(state::bg_index, state::bg_index).diagonal().fill(0.001);
         kf.P.block<3, 3>(state::ba_index, state::ba_index).diagonal().fill(0.001);
-        if (parameters->extrinsic_est_en) {
-            kf.P.block<3, 3>(state::offset_R_L_I_index, state::offset_R_L_I_index)
-                .diagonal().fill(parameters->extrinsic_rotation_cov);
-            kf.P.block<3, 3>(state::offset_T_L_I_index, state::offset_T_L_I_index)
-                .diagonal().fill(parameters->extrinsic_translation_cov);
-        } else {
-            // 固定外参仍占30维原状态的位置，但无不确定度/交叉项，不会被观测注入。
-            kf.P.middleRows<6>(state::offset_R_L_I_index).setZero();
-            kf.P.middleCols<6>(state::offset_R_L_I_index).setZero();
-        }
     }
 
     void Estimator::h_point(const state &s, const DeskewedPoint &point, point_measurement_result &result) {
         result.valid = false;
         if (!ivox || !point.point_lidar.allFinite() || !std::isfinite(point.time_offset) ||
             !s.rotation.allFinite() || !s.position.allFinite() || !s.velocity.allFinite() ||
-            !s.omg.allFinite() || !s.offset_R_L_I.allFinite() || !s.offset_T_L_I.allFinite()) { return; }
-        const Eigen::Vector3d point_imu = point.point_at_end(s);
-        const Eigen::Vector3d point_world = point.point_world(s);
+            !s.omg.allFinite() || !Lidar_R_wrt_IMU.allFinite() || !Lidar_T_wrt_IMU.allFinite()) { return; }
+        const Eigen::Vector3d point_imu = point.point_at_end(s, Lidar_R_wrt_IMU, Lidar_T_wrt_IMU);
+        const Eigen::Vector3d point_world = point.point_world(s, Lidar_R_wrt_IMU, Lidar_T_wrt_IMU);
         if (!point_imu.allFinite() || !point_world.allFinite()) { return; }
         ivox->get_closest_point(point_world.cast<float>(), nearest_points, 5);
         if (nearest_points.size() != 5) { return; }
@@ -71,7 +58,7 @@ namespace ly_lio {
         const double distance = normal.dot(point_world) + offset;
         // 沿用Point-LIO的距离相关门控：远处点允许稍大残差，拒绝明显错误关联。
         if (!std::isfinite(distance) || point_imu.norm() <= parameters->match_sqaured * distance * distance) { return; }
-        result.H = point.jacobian(s, normal, parameters->extrinsic_est_en);
+        result.H = point.jacobian(s, normal, Lidar_R_wrt_IMU, Lidar_T_wrt_IMU);
         result.z = -distance;
         // 原点的3D各向同性协方差Σ=laser_point_cov*I。精确噪声投影为-nᵀR*D*R_IL；
         // D和R_IL均正交，方差等价于用-nᵀR投影，保持原各向同性测量噪声配置。
@@ -83,7 +70,6 @@ namespace ly_lio {
 
     size_t Estimator::update_lidar_batch(const std::vector<DeskewedPoint> &points) {
         batch_measurement_result batch;
-        batch.estimate_extrinsics = parameters->extrinsic_est_en;
         // 冻结一次先验。地图在扫描结束才写入，batch内部没有逐点状态注入或自匹配。
         const state prior = kf.x;
         for (const auto &point : points) {

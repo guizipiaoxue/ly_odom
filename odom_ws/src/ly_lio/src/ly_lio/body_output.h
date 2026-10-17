@@ -39,44 +39,4 @@ inline common::Odometry body_odometry(
     return result;
 }
 
-// 安装文件固定的是T_BL；在线T_IL变化时重算T_BI，并将外参交叉协方差传到机体输出。
-inline common::Odometry body_odometry_from_lidar_mount(
-    double timestamp, const state &x,
-    const Eigen::Matrix<double, state::DIM, state::DIM> &covariance,
-    const Eigen::Matrix3d &R_BL, const Eigen::Vector3d &t_BL) {
-    const auto &E = x.offset_R_L_I;
-    const Eigen::Vector3d s = R_BL.transpose() * t_BL;
-    const Eigen::Vector3d r = x.offset_T_L_I - E * s;
-    const Eigen::Matrix3d B = R_BL * E.transpose();
-    const Eigen::Vector3d v_I = x.rotation.transpose() * x.velocity;
-    const Eigen::Vector3d u = v_I + x.omg.cross(r);
-    common::Odometry result;
-    result.timestamp = timestamp;
-    result.position = x.position + x.rotation * r;
-    result.orientation = Eigen::Quaterniond(x.rotation * E * R_BL.transpose()).normalized();
-    result.velocity = x.velocity + x.rotation * x.omg.cross(r);
-    result.angular_velocity = B * x.omg;
-
-    Eigen::Matrix<double, 6, state::DIM> J_pose = Eigen::Matrix<double, 6, state::DIM>::Zero();
-    J_pose.block<3, 3>(0, state::position_index).setIdentity();
-    J_pose.block<3, 3>(0, state::rotation_index) = -x.rotation * hat<double>(r);
-    J_pose.block<3, 3>(0, state::offset_R_L_I_index) = x.rotation * E * hat<double>(s);
-    J_pose.block<3, 3>(0, state::offset_T_L_I_index) = x.rotation;
-    J_pose.block<3, 3>(3, state::rotation_index) = x.rotation;
-    J_pose.block<3, 3>(3, state::offset_R_L_I_index) = x.rotation * E;
-    result.pose_covariance = J_pose * covariance * J_pose.transpose();
-
-    Eigen::Matrix<double, 6, state::DIM> J_twist = Eigen::Matrix<double, 6, state::DIM>::Zero();
-    J_twist.block<3, 3>(0, state::rotation_index) = B * hat<double>(v_I);
-    J_twist.block<3, 3>(0, state::offset_R_L_I_index) =
-        R_BL * hat<double>(Eigen::Vector3d(E.transpose() * u)) + B * hat<double>(x.omg) * E * hat<double>(s);
-    J_twist.block<3, 3>(0, state::offset_T_L_I_index) = B * hat<double>(x.omg);
-    J_twist.block<3, 3>(0, state::velocity_index) = B * x.rotation.transpose();
-    J_twist.block<3, 3>(0, state::omg_index) = -B * hat<double>(r);
-    J_twist.block<3, 3>(3, state::offset_R_L_I_index) =
-        R_BL * hat<double>(Eigen::Vector3d(E.transpose() * x.omg));
-    J_twist.block<3, 3>(3, state::omg_index) = B;
-    result.twist_covariance = J_twist * covariance * J_twist.transpose();
-    return result;
-}
 }  // namespace ly_lio

@@ -26,15 +26,23 @@ void Parameters::read_parameters(rclcpp::Node &node) {
     extrinsic_T = Eigen::Map<const Eigen::Vector3d>(translation.data());
     extrinsic_R = Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(rotation.data());
     // 内部始终使用Point-LIO的p_I=R_IL*p_L+t_IL；位置向量在读取边界只换算一次。
-    const auto convention = node.declare_parameter<std::string>("extrinsic_translation_convention", "lidar_in_imu");
+    const auto convention = node.declare_parameter<std::string>("extrinsic_translation_convention", "imu_in_lidar");
     if (convention == "imu_in_lidar") {
         extrinsic_T = (-extrinsic_R * extrinsic_T).eval();
     } else if (convention != "lidar_in_imu") {
         throw std::invalid_argument("extrinsic_translation_convention必须为imu_in_lidar或lidar_in_imu");
     }
-    extrinsic_est_en = node.declare_parameter<bool>("extrinsic_est_en", false);
-    extrinsic_rotation_cov = node.declare_parameter<double>("extrinsic_rotation_cov", 0.01);
-    extrinsic_translation_cov = node.declare_parameter<double>("extrinsic_translation_cov", 0.01);
+    // 24维物理状态不包含外参。旧false仅供配置迁移，不能静默接受在线标定要求。
+    const auto &overrides = node.get_node_parameters_interface()->get_parameter_overrides();
+    if (node.declare_parameter<bool>("extrinsic_est_en", false)) {
+        throw std::invalid_argument("当前SO(3)×R^21为24维固定外参模型，不支持extrinsic_est_en=true");
+    }
+    if (overrides.count("extrinsic_est_en")) {
+        RCLCPP_WARN(node.get_logger(), "extrinsic_est_en已停用；当前24维模型始终使用固定激光-IMU标定，请删除旧false配置");
+    }
+    if (overrides.count("extrinsic_rotation_cov") || overrides.count("extrinsic_translation_cov")) {
+        throw std::invalid_argument("24维模型已移除外参先验，请删除extrinsic_rotation_cov/extrinsic_translation_cov");
+    }
     imu_en = node.declare_parameter<bool>("imu_en", true);
     check_satu = node.declare_parameter<bool>("check_satu", true);
     fix_gravity_direction = node.declare_parameter<bool>("fix_gravity_direction", true);
@@ -62,7 +70,7 @@ void Parameters::read_parameters(rclcpp::Node &node) {
     velocity_process_noise_rate = node.declare_parameter<double>("velocity_process_noise_rate", 0.0);
     max_imu_gap = node.declare_parameter<double>("max_imu_gap", 0.1);
     bg_cov = node.declare_parameter<double>("bg_cov", 0.0001);
-    lidar_batch_duration = node.declare_parameter<double>("lidar_batch_duration", 0.0001);
+    lidar_batch_duration = node.declare_parameter<double>("lidar_batch_duration", 0.001);
     point_filter_num = node.declare_parameter<int>("point_filter_num", 1);
     space_downsample = node.declare_parameter<bool>("space_downsample", true);
     space_downsample_leaf_size = node.declare_parameter<double>("space_downsample_leaf_size", 0.2);
@@ -108,7 +116,6 @@ void Parameters::read_parameters(rclcpp::Node &node) {
         !positive(init_max_gyro_mean) || !positive(init_max_gyro_std) ||
         !positive(init_max_accel_std) || !positive(init_max_gravity_error) ||
         !positive(imu_meas_acc_cov) || !positive(imu_meas_omg_cov) ||
-        !positive(extrinsic_rotation_cov) || !positive(extrinsic_translation_cov) ||
         !nonnegative(acceleration_cov) || !nonnegative(omg_cov) ||
         !nonnegative(ba_cov) || !nonnegative(bg_cov) || !positive(process_noise_reference_dt) || !positive(max_imu_gap) ||
         point_filter_num < 1 || !positive(space_downsample_leaf_size) || !positive(map_resolution) ||

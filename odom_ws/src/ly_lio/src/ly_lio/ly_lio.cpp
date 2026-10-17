@@ -68,8 +68,8 @@ void LyLio::on_imu_callback(const common::ImuMsg &imu) {
 }
 Eigen::Vector3f LyLio::point_to_world(const Eigen::Vector3f &point) const {
     const auto &x = estimator.kf.x;
-    const Eigen::Matrix3d &E = x.offset_R_L_I;
-    const Eigen::Vector3d &t = x.offset_T_L_I;
+    const Eigen::Matrix3d &E = estimator.Lidar_R_wrt_IMU;
+    const Eigen::Vector3d &t = estimator.Lidar_T_wrt_IMU;
     return (x.rotation * (E * point.cast<double>() + t) + x.position).cast<float>();
 }
 
@@ -152,7 +152,7 @@ bool LyLio::initialize() {
                 preprocess.imu_deque.pop_front();
             }
             is_init = true;
-            RCLCPP_INFO(rclcpp::get_logger("ly_lio"), "初始地图完成：%zu帧、%zu个有间距真实点，开始Batch激光/IMU联合估计", initial_map_scans, initial_map_points);
+            RCLCPP_INFO(rclcpp::get_logger("ly_lio"), "初始地图完成：%zu帧、%zu个有间距真实点，开始24维Batch激光/IMU联合估计", initial_map_scans, initial_map_points);
             return true;
         }
     }
@@ -225,10 +225,10 @@ void LyLio::process_scan(const ScanFrame &scan) {
             matched_points += estimator.update_lidar_batch(batch_points);
             const auto &posterior = estimator.kf.x;
             for (const auto &point : batch_points) {
-                map_increment.push_back(point.point_world(posterior).cast<float>());
+                map_increment.push_back(point.point_world(posterior, estimator.Lidar_R_wrt_IMU, estimator.Lidar_T_wrt_IMU).cast<float>());
             }
             for (const auto &point : batch_dense) {
-                registered.push_back(point.point_world(posterior).cast<float>());
+                registered.push_back(point.point_world(posterior, estimator.Lidar_R_wrt_IMU, estimator.Lidar_T_wrt_IMU).cast<float>());
             }
             laser_index = laser_end;
             dense_index = dense_end;

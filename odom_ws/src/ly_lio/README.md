@@ -3,43 +3,32 @@
 **后续修改先查[未采用方案记录](docs/未采用方案记录.md)。没有新的故障证据、模型机制
 及同源/留出验证，不得重复合入原失败方案。**
 
-基于 Small Point-LIO / Point-LIO 的独立 ROS 2 激光惯性里程计。当前按
-[建模.md](docs/建模.md)采用**激光Batch联合更新与IMU输出观测模型**，不接轮速。
-按最新要求恢复Point-LIO的30维状态与协方差：`[p,R,R_IL,t_IL,v,omega,a,g,bg,ba]`。
-IMU观测仍为6维；`extrinsic_est_en=false`固定标定，`true`联合估计6维外参。
-本轮恢复及芯片安装位置说明见[30维状态与外参](docs/30维状态恢复与IMU安装外参.md)。
-此前调参与长时间实测见[24维清理与10分钟零漂](docs/24维清理与10分钟零漂.md)，属于旧配置结果。
-里程计参数修改包内[config/mid360.yaml](config/mid360.yaml)，由节点代码直接读取；重启
-`./scripts/odom.sh`生效，无需重新编译。当前Batch采用用户选定的**0.1ms**，
-配置单位秒：`lidar_batch_duration: 0.0001`，严格小于10ms。
-各组件配置位置及直接加载说明见[参数配置](docs/统一参数配置.md)，
-搜索和跨录包结果见[Batch时长调参与零漂](docs/Batch时长调参与零漂.md)。
-2026-10-16距离优先修复后，MID360采用 `velocity_process_noise_rate: 0.1` m²/s³，
-两问题包闭合0.262/0.304m，运动及近静止留出通过；保留原PCA和全部Batch候选观测。
-新增参数代码默认0，L2配置不变。结果及近静止毫米级退化说明见
-[距离优先速度噪声修复](docs/距离优先速度噪声修复.md)。
+基于 Small Point-LIO / Point-LIO 的独立 ROS 2 激光惯性里程计。按2026-10-17用户要求，
+状态及误差协方差为真正的 **24维 `SO(3)×R^21`**，代码顺序为
+`[p,R,v,omega,a,g,bg,ba]`。IMU角速度和比力是状态，通过六维IMU输出观测更新；
+饱和轴按95%量程单独屏蔽。固定LiDAR–IMU外参不进入状态，不融合轮速。
 
-本轮连续启动、PCA平面方差及Batch共享地图点噪声实验**精度未通过，代码及参数已删除**：
-124845同源共同窗基线闭合14.63cm，候选15.02～15.37cm，未达到10cm；三包启动和
-新10分钟静止验收也未通过。当前使用原启动与独立点噪声，速度噪声率继续0.1。
-旧`continuous_initialization`、`init_imu_duration`、`plane_noise_model`不能再用于启用实验。
-完整历史结果和模型限制见
-[连续启动与平面观测模型验证](docs/连续启动与平面观测模型验证.md)。
+MID360使用 **1ms Batch**（`lidar_batch_duration: 0.001`），遇IMU或扫描末端提前结束，
+同stamp先IMU。每批原始点补偿到真实批末，每点独立查询历史地图5近邻PCA平面，
+计算标量点到面残差及H；同一批冻结先验，合并所有合格点的信息后只执行一次联合更新。
+H直接包含`p/R/v/omega`12列，经完整24维P更新全部状态；独立各向同性点噪声使合格点
+采用相同的单点测量方差。后验注册云与地图点按同一补偿模型重新计算，整扫描结束才
+写入历史地图。没有合格匹配时继续预测和可用IMU更新。
 
-静止标定后建立初图；激光按真实采样时间组成最长0.1ms的Batch，遇IMU观测提前分界。
-批内点统一补偿到实际批末，查询历史地图PCA平面，在同一先验上联合更新一次。
-补偿随批末状态变化，激光H直接包含速度/角速度导数，并修正姿态项；共享状态不确定度
-通过完整P及交叉项参与联合更新。后验入图/注册云按同一模型重新补偿。公式与验证见
-[Batch运动补偿状态雅可比](docs/Batch运动补偿状态雅可比.md)。
-IMU按自身时刻观测，使用95%饱和屏蔽。整扫描后验点在scan_end统一入图。
-保留真点空间采样、多点体素LRU地图、完整交叉协方差与SO(3)误差重置。
-默认每扫描末点发布Odom/TF；`publish_odometry_per_batch=true`可额外按批输出。
-标准PointCloud2不依赖PCL或IKFoM。实现与验证见
-[文档模型改进与零漂验证](docs/文档模型改进与零漂验证.md)。
+模型、外参公式、原PCA门控与限制见[建模.md的当前实现约定](docs/建模.md)。
+目标历史地图仍视为固定参考；尚未建模持久地图误差及状态—地图相关性。
+本轮保留逐点残差的Batch更新，不引入平面对平面观测，不恢复失败的相邻10ms窗口/
+Schmidt、连续初始化、支持点对角方差或共享支持点GLS实验。
+保留当前噪声/采样/地图数值，MID360速度噪声率仍为0.1 m²/s³；此前精度数字均为历史配置结果。
+
+参数修改[config/mid360.yaml](config/mid360.yaml)，由节点直接读取，重启生效；
+显式ROS参数可覆盖。配置位置见[统一参数配置](docs/统一参数配置.md)。
+默认每扫描末点发布Odom/TF，`publish_odometry_per_batch=true`可额外按实际批末输出。
+标准PointCloud2模式不依赖PCL或IKFoM。本轮验证结果见[24维Batch与固定外参验证](docs/24维Batch与固定外参验证.md)。
 
 默认直接订阅 `/livox/lidar` 和 `/livox/imu`，状态原点为 IMU，测量轴为
 `imu_frame=livox_frame`仍匹配原始驱动的测量轴标签。MID360的`extrinsic_T`保存激光系下
-IMU芯片位置`[-0.011,-0.02329,0.04412]`m，按显式约定换算为内部lidar→IMU平移。
+IMU芯片位置`[0.011,0.02329,-0.04412]`m，按显式约定换算为内部lidar→IMU平移。
 安装外参只用于输出 baselink 位姿，保留
 `pcl_publisher` 发布的 `/bashlink/pcl` 与 `/baselink/imu` 给其他使用者。发布：
 
@@ -112,19 +101,19 @@ Point-LIO 的备用 24 维 IMU 输入滤波路径不在本包中。
 安装文件的
 `lidar_to_gimbal_rotation/translation` 当前作为 T_BL（lidar→baselink）读取。
 节点推导 T_BI = T_BL × inverse(T_IL)，发布 T_WB = T_WI × inverse(T_BI)。
-在线模式随当前R_IL/t_IL重新组合机体关系，并将外参协方差及交叉项传到输出。
+固定T_IL/T_BL在启动时组合一次，重建不改变配置标定。
 也可用 `imu_to_body_R`（行优先9元数组）、`imu_to_body_T`（3元数组）直接给出固定T_BI。
-`extrinsic_rotation_cov`和`extrinsic_translation_cov`仅控制在线模式的初始先验。
+旧`extrinsic_est_en=true`和外参先验参数会明确拒绝启动；旧false仅告警兼容。
 两种安装外参来源互斥。IMU 与输出帧不同却未配置安装外参时，启动明确报错。
 
 基座原点在 IMU 中为 r_IB，世界系基座速度为 v_WB = v_WI + R_WI(omega_I × r_IB)。
-位姿与 twist 协方差由完整30维P及输出雅可比计算，包括杆臂和姿态关联项。
+位姿与 twist 协方差由完整24维P及输出雅可比计算，包括杆臂和姿态关联项。
 地图、注册点云保持滤波器建立的 odom 坐标，Path 则记录输出 baselink 位姿。
 默认 odom 原点仍为初始化 IMU 原点，故 baselink 的初始位置可非零，朝向可非单位旋转。
 
 固定 TF 使用 `publish_sensor_tf` 控制；已有机器人状态发布器管理该安装关系时设为 false，
 避免多个发布者。此节点发布的是baselink→lidar_frame，不能把非零偏移的IMU原点
-标成激光原点。默认固定T_BL仍发静态TF；显式固定T_BI且在线估计T_IL时，改发同stamp动态传感器TF。
+标成激光原点。固定安装关系发布为静态TF。
 如需独立真实IMU坐标系，可另行发布不同名称的TF，原始驱动frame_id无需改名。
 
 现有安装文件键名指向 gimbal，项目仍按该目标就是 baselink 的约定使用；若实际是活动云台，

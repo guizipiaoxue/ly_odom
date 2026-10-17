@@ -1,0 +1,95 @@
+{
+  "default_static": {
+    "outputs_before_reset": 16,
+    "outputs_after_reset": 7,
+    "three_stamp_sets_equal": true,
+    "tf_odom_max_difference": 0,
+    "static_tf_matches_mount": true,
+    "fixed_extrinsic_reset": true,
+    "queried_batch": 0.001,
+    "queried_convention": "imu_in_lidar",
+    "shutdown_exit": 0,
+    "input_imu_position_in_lidar_m": [
+      0.011,
+      0.02329,
+      -0.04412
+    ],
+    "input_rotation_row_major": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "expected_internal_t_IL_m": [
+      -0.011,
+      -0.02329,
+      0.04412
+    ],
+    "body_initial_position_max_allowed_error_m": 0.002
+  },
+  "cli_rotated_motion": {
+    "outputs_before_reset": 28,
+    "outputs_after_reset": 7,
+    "three_stamp_sets_equal": true,
+    "tf_odom_max_difference": 0,
+    "static_tf_matches_mount": true,
+    "fixed_extrinsic_reset": true,
+    "queried_batch": 0.001,
+    "queried_convention": "imu_in_lidar",
+    "shutdown_exit": 0,
+    "input_imu_position_in_lidar_m": [
+      0.12,
+      -0.08,
+      0.035
+    ],
+    "input_rotation_row_major": [
+      0.9637726277214778,
+      -0.18101230307208277,
+      -0.1959001485231146,
+      0.1539162136692428,
+      0.9772710458855298,
+      -0.14577757730023705,
+      0.21783507803969931,
+      0.11034422961960016,
+      0.9697278122056183
+    ],
+    "expected_internal_t_IL_m": [
+      -0.12327719437403493,
+      0.06481395323604154,
+      -0.051253144422392545
+    ],
+    "body_initial_position_max_allowed_error_m": 0.002
+  },
+  "reject_online": {
+    "exit": -6,
+    "matched_error": "不支持extrinsic_est_en=true"
+  },
+  "reject_convention": {
+    "exit": -6,
+    "matched_error": "extrinsic_translation_convention必须"
+  },
+  "reject_rotation": {
+    "exit": -6,
+    "matched_error": "extrinsic_R 必须为合法旋转矩阵"
+  },
+  "reject_batch": {
+    "exit": -6,
+    "matched_error": "lidar_batch_duration必须"
+  },
+  "scope": {
+    "model": "24-state point-to-plane Batch with fixed lidar-to-IMU extrinsics",
+    "ros_domain_id": 163,
+    "input_imu_hz": 200,
+    "input_lidar_hz": 10,
+    "three_stamp_output_groups": 58,
+    "hardware_started": false,
+    "ptp_changed": false,
+    "pose_accuracy_acceptance": false,
+    "temporary_programs_removed": true
+  }
+}

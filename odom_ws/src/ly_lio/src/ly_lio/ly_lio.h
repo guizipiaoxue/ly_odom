@@ -62,9 +62,8 @@ public:
     bool initialized() const { return is_init; }
     LioDiagnostics diagnostics() const;
     const state &current_state() const { return estimator.kf.x; }
-    const Eigen::Matrix3d &lidar_to_imu_rotation() const { return estimator.kf.x.offset_R_L_I; }
-    const Eigen::Vector3d &lidar_to_imu_translation() const { return estimator.kf.x.offset_T_L_I; }
-    bool estimates_extrinsics() const { return parameters.extrinsic_est_en; }
+    const Eigen::Matrix3d &lidar_to_imu_rotation() const { return estimator.Lidar_R_wrt_IMU; }
+    const Eigen::Vector3d &lidar_to_imu_translation() const { return estimator.Lidar_T_wrt_IMU; }
     const auto &covariance() const { return estimator.kf.P; }
 };
 }  // namespace ly_lio

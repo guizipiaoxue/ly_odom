@@ -276,12 +276,11 @@ LyLioNode::LyLioNode(const rclcpp::NodeOptions &options)
         t_BL_ = t_BI_ + R_BI_ * lio_->lidar_to_imu_translation();
     }
     if (body_frame_ == lidar_frame_ &&
-        (!R_BL_.isApprox(Eigen::Matrix3d::Identity(), 1e-5) || t_BL_.norm() > 1e-9 ||
-         (!body_from_lidar_mount_ && lio_->estimates_extrinsics()))) {
+        (!R_BL_.isApprox(Eigen::Matrix3d::Identity(), 1e-5) || t_BL_.norm() > 1e-9)) {
         throw std::invalid_argument("body_frame与lidar_frame同名时必须是同一固定原点与测量轴");
     }
-    RCLCPP_INFO(get_logger(), "Point-LIO状态/P: %d维，外参%s；内部t_IL=[%.8f, %.8f, %.8f]m",
-        state::DIM, lio_->estimates_extrinsics() ? "在线估计" : "固定",
+    RCLCPP_INFO(get_logger(), "Point-LIO状态/P: %d维，外参固定；内部t_IL=[%.8f, %.8f, %.8f]m",
+        state::DIM,
         lio_->lidar_to_imu_translation().x(), lio_->lidar_to_imu_translation().y(),
         lio_->lidar_to_imu_translation().z());
     const bool terminal_enabled = declare_parameter<bool>("terminal.enabled", true);
@@ -307,9 +306,7 @@ LyLioNode::LyLioNode(const rclcpp::NodeOptions &options)
     cloud_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("ly_lio/cloud_registered", output_qos);
     path_publisher_ = create_publisher<nav_msgs::msg::Path>("ly_lio/path", rclcpp::QoS(10).reliable());
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-    publish_dynamic_sensor_tf_ = publish_tf_ && publish_sensor_tf && body_frame_ != lidar_frame_ &&
-        !body_from_lidar_mount_ && lio_->estimates_extrinsics();
-    if (publish_tf_ && publish_sensor_tf && body_frame_ != lidar_frame_ && !publish_dynamic_sensor_tf_) {
+    if (publish_tf_ && publish_sensor_tf && body_frame_ != lidar_frame_) {
         sensor_tf_broadcaster_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(*this);
         geometry_msgs::msg::TransformStamped tf;
         tf.header.stamp = now();
@@ -414,19 +411,15 @@ void LyLioNode::process_pending() {
         clear_output_history();
         RCLCPP_WARN(get_logger(), "传感器时序中断，已清空轨迹和导出地图，等待重新静止初始化");
     } else if (!initialized_before && lio_->initialized()) {
-        RCLCPP_INFO(get_logger(), "静止标定和初始地图完成，开始 Batch 点到地图联合更新");
+        RCLCPP_INFO(get_logger(), "静止标定和初始地图完成，开始24维 Batch 点到历史地图平面联合更新");
     }
     if (terminal_) { terminal_->update(lio_->diagnostics()); }
 }
 
 void LyLioNode::publish_odometry(const common::Odometry &imu_odometry) {
     // T_WB = T_WI * inverse(T_BI)，地图仍在滤波器建立的 odom 中，无需再变换。
-    if (body_from_lidar_mount_) {
-        R_BI_ = R_BL_ * lio_->lidar_to_imu_rotation().transpose();
-        t_BI_ = t_BL_ - R_BI_ * lio_->lidar_to_imu_translation();
-    }
-    const auto odometry = body_from_lidar_mount_ ?
-        body_odometry_from_lidar_mount(imu_odometry.timestamp, lio_->current_state(), lio_->covariance(), R_BL_, t_BL_) :
+    // 固定T_IL/T_BL在启动时只组合一次，24维P仅传播惯性状态的不确定度。
+    const auto odometry =
         body_odometry(imu_odometry.timestamp, lio_->current_state(), lio_->covariance(), R_BI_, t_BI_);
     nav_msgs::msg::Odometry msg;
     // stamp 是此位姿对应的传感器采样时刻，不能改为回调的 now() 掩盖输入批次延迟。
@@ -465,21 +458,6 @@ void LyLioNode::publish_odometry(const common::Odometry &imu_odometry) {
         tf.transform.rotation = msg.pose.pose.orientation;
         // TF 与里程计都使用转换后的 baselink 位姿，安装外参只组合一次。
         tf_broadcaster_->sendTransform(tf);
-        if (publish_dynamic_sensor_tf_) {
-            // 显式固定T_BI时在线T_IL尚在变化，传感器关系随当前标定发布动态TF。
-            geometry_msgs::msg::TransformStamped sensor_tf;
-            sensor_tf.header.stamp = msg.header.stamp;
-            sensor_tf.header.frame_id = body_frame_;
-            sensor_tf.child_frame_id = lidar_frame_;
-            const Eigen::Vector3d t = t_BI_ + R_BI_ * lio_->lidar_to_imu_translation();
-            const Eigen::Quaterniond q(R_BI_ * lio_->lidar_to_imu_rotation());
-            sensor_tf.transform.translation.x = t.x();
-            sensor_tf.transform.translation.y = t.y();
-            sensor_tf.transform.translation.z = t.z();
-            sensor_tf.transform.rotation.x = q.x(); sensor_tf.transform.rotation.y = q.y();
-            sensor_tf.transform.rotation.z = q.z(); sensor_tf.transform.rotation.w = q.w();
-            tf_broadcaster_->sendTransform(sensor_tf);
-        }
         last_tf_time_ = odometry.timestamp;
     }
     if (terminal_) {

@@ -20,23 +20,23 @@ ly_lio:
     timestamp_mode: relative
     timestamp_scale: 1.0e-9
     # 文档Batch模型：真实点补偿到批末，联合匹配历史地图平面；不跨IMU事件。
-    lidar_batch_duration: 0.0001  # s = 0.1ms；用户选定，合法范围0<时长<10ms。
+    lidar_batch_duration: 0.001  # s = 0.1ms；用户选定，合法范围0<时长<10ms。
     point_filter_num: 1
     space_downsample: true
     space_downsample_leaf_size: 0.20
-    map_resolution: 0.20
+    map_resolution: 0.50
     map_capacity: 1000000
-    map_max_points_per_voxel: 32
+    map_max_points_per_voxel: 128
     map_min_point_distance: 0.05
     # 静止标定完成后再收集5帧建立初始地图；不使用标定前的扫描。
     init_map_size: 100
     init_map_scans: 5
-    laser_point_cov: 0.01         # m²；各向同性三维点噪声投影到平面残差。
-    plane_threshold: 0.10
-    match_sqaured: 81.0
+    laser_point_cov: 0.001         # m²；各向同性三维点噪声投影到平面残差。
+    plane_threshold: 0.01
+    match_sqaured: 25.0
 
     min_distance: 0.5
-    max_distance: 50.0
+    max_distance: 100.0
     max_buffer_points: 2000000
     max_buffer_imu: 20000
     max_imu_gap: 0.1               # s；断流/溢出则重建odom，禁止跨缺失IMU区间积分。
@@ -57,7 +57,7 @@ ly_lio:
     # 30维Point-LIO状态。T填IMU芯片原点在激光系的位置（m），保留用户测量原值。
     # 内部使用p_I=R_IL*p_L+t_IL，读取时t_IL=-R_IL*extrinsic_T，不能重复取反。
     extrinsic_translation_convention: imu_in_lidar
-    extrinsic_T: [-0.011, -0.02329, 0.04412]
+    extrinsic_T: [0.011, 0.02329, -0.04412]
     # R始终将激光测量轴旋转到IMU测量轴，与上述T的位置约定无关。
     extrinsic_R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
     extrinsic_est_en: false         # false固定标定；true联合估计6维外参，状态/P始终30维。
@@ -69,6 +69,7 @@ ly_lio:
     imu_meas_omg_cov: 0.01
     # Q：沿用原200Hz IMU的数值，以Q*参考周期转换方差率，再乘实际传播时长。
     process_noise_reference_dt: 0.005 # s；不随激光点时间分段改变累计噪声。
+    velocity_process_noise_rate: 0.1 # m²/s³；2026-10-16两问题包及留出通过，直接速度增量=rate*dt；0回退。
     acceleration_cov: 500.0
     omg_cov: 1000.0
     ba_cov: 0.0001

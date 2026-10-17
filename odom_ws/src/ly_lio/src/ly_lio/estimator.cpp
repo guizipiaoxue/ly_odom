@@ -39,9 +39,12 @@ namespace ly_lio {
 
     void Estimator::h_point(const state &s, const DeskewedPoint &point, point_measurement_result &result) {
         result.valid = false;
-        const auto &point_imu = point.point_imu;
-        if (!ivox || !point_imu.allFinite() || !s.rotation.allFinite() || !s.position.allFinite()) { return; }
-        const Eigen::Vector3d point_world = s.rotation * point_imu + s.position;
+        if (!ivox || !point.point_lidar.allFinite() || !std::isfinite(point.time_offset) ||
+            !s.rotation.allFinite() || !s.position.allFinite() || !s.velocity.allFinite() ||
+            !s.omg.allFinite() || !s.offset_R_L_I.allFinite() || !s.offset_T_L_I.allFinite()) { return; }
+        const Eigen::Vector3d point_imu = point.point_at_end(s);
+        const Eigen::Vector3d point_world = point.point_world(s);
+        if (!point_imu.allFinite() || !point_world.allFinite()) { return; }
         ivox->get_closest_point(point_world.cast<float>(), nearest_points, 5);
         if (nearest_points.size() != 5) { return; }
 
@@ -68,24 +71,11 @@ namespace ly_lio {
         const double distance = normal.dot(point_world) + offset;
         // 沿用Point-LIO的距离相关门控：远处点允许稍大残差，拒绝明显错误关联。
         if (!std::isfinite(distance) || point_imu.norm() <= parameters->match_sqaured * distance * distance) { return; }
-        const Eigen::Vector3d normal_imu = s.rotation.transpose() * normal;
-        result.H.setZero();
-        result.H.template segment<3>(state::position_index) = normal.transpose();
-        result.H.template segment<3>(state::rotation_index) = point_imu.cross(normal_imu).transpose();
-        if (parameters->extrinsic_est_en) {
-            if (!s.offset_R_L_I.allFinite() || !s.offset_T_L_I.allFinite() ||
-                !point.point_lidar.allFinite() || !point.rotation_to_end.allFinite()) { return; }
-            // q_I_end=D(R_IL p_L+t_IL)+b；运动补偿D/b冻结在本批先验。
-            // R_IL采用右扰动：H_RIL=p_L×(R_IL^T D^T R_WI^T n)，H_tIL=D^T R_WI^T n。
-            // D=I时退化为原Point-LIO外参观测；非零采样时间差不能遗漏D的作用。
-            const Eigen::Vector3d normal_at_sample = point.rotation_to_end.transpose() * normal_imu;
-            result.H.template segment<3>(state::offset_R_L_I_index) =
-                point.point_lidar.cross(s.offset_R_L_I.transpose() * normal_at_sample).transpose();
-            result.H.template segment<3>(state::offset_T_L_I_index) = normal_at_sample.transpose();
-        }
+        result.H = point.jacobian(s, normal, parameters->extrinsic_est_en);
         result.z = -distance;
-        // 点在IMU系的3D各向同性协方差Σ=laser_point_cov*I。投影到标量点到面残差：
-        // D_noise=-nᵀR，R_eff=D_noiseΣD_noiseᵀ；刚性去畸变旋转不改变各向同性点噪声。
+        // 原点的3D各向同性协方差Σ=laser_point_cov*I。精确噪声投影为-nᵀR*D*R_IL；
+        // D和R_IL均正交，方差等价于用-nᵀR投影，保持原各向同性测量噪声配置。
+        // 补偿状态的不确定度及共享交叉项已经由完整H/P进入创新；不能再加到独立R中。
         const Eigen::RowVector3d noise_projection = -normal.transpose() * s.rotation;
         result.variance = parameters->laser_point_cov * noise_projection.squaredNorm();
         result.valid = std::isfinite(result.variance) && result.variance > 0;
@@ -110,6 +100,11 @@ namespace ly_lio {
 
     [[nodiscard]] Eigen::Matrix<state::value_type, state::DIM, state::DIM> Estimator::process_noise_cov() const {
         Eigen::Matrix<state::value_type, state::DIM, state::DIM> cov = Eigen::Matrix<state::value_type, state::DIM, state::DIM>::Zero();
+        // predict_cov统一乘reference_dt*dt；先除参考周期，使直接速度增量恒为rate*dt。
+        // 不改变omega/a/bg/ba原有离散，也不照搬PLIO的Q*dt²。rate=0逐数兼容旧模型。
+        cov.block<3, 3>(state::velocity_index, state::velocity_index).diagonal().fill(
+            static_cast<state::value_type>(parameters->velocity_process_noise_rate /
+                                           parameters->process_noise_reference_dt));
         cov.block<3, 3>(state::omg_index, state::omg_index).diagonal().fill(static_cast<state::value_type>(parameters->omg_cov));
         cov.block<3, 3>(state::acceleration_index, state::acceleration_index).diagonal().fill(static_cast<state::value_type>(parameters->acceleration_cov));
         cov.block<3, 3>(state::bg_index, state::bg_index).diagonal().fill(static_cast<state::value_type>(parameters->bg_cov));

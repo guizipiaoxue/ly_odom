@@ -58,16 +58,17 @@ namespace ly_lio {
     struct point_measurement_result {
         bool valid = false;
         state::value_type z = 0.0;  // 观测减预测：负的点到地图平面有符号距离。
-        Eigen::Matrix<state::value_type, 1, 12> H = Eigen::Matrix<state::value_type, 1, 12>::Zero();
+        // 直接观测[p,R,R_IL,t_IL,v,omega]，其余状态通过完整P的交叉项更新。
+        Eigen::Matrix<state::value_type, 1, 18> H = Eigen::Matrix<state::value_type, 1, 18>::Zero();
         state::value_type variance = 0.01;
     };
 
     struct batch_measurement_result {
         size_t matched_points = 0;
         bool estimate_extrinsics = false;
-        // 全部点共享一次先验和同一batch末时刻；累加[p,theta,theta_IL,t_IL]的信息。
-        Eigen::Matrix<double, 12, 12> information = Eigen::Matrix<double, 12, 12>::Zero();
-        Eigen::Matrix<double, 12, 1> information_vector = Eigen::Matrix<double, 12, 1>::Zero();
+        // 全部点共享批末先验；包括补偿对v/omega的直接导数及其交叉信息。
+        Eigen::Matrix<double, 18, 18> information = Eigen::Matrix<double, 18, 18>::Zero();
+        Eigen::Matrix<double, 18, 1> information_vector = Eigen::Matrix<double, 18, 1>::Zero();
     };
 
     struct imu_measurement_result {
@@ -110,20 +111,37 @@ namespace ly_lio {
         template <int ObservationDimension>
         inline bool update_lidar_information(const batch_measurement_result &measurement) {
             using observation_matrix = Eigen::Matrix<double, ObservationDimension, ObservationDimension>;
-            const observation_matrix observed_covariance = P.template topLeftCorner<ObservationDimension, ObservationDimension>();
+            static_assert(ObservationDimension == 12 || ObservationDimension == 18);
+            // 固定外参跳过P中严格为零的6维，选择[p,R,v,omega]；在线选择前18维。
+            const auto state_index = [](int i) {
+                if constexpr (ObservationDimension == 12) { return i < 6 ? i : i + 6; }
+                else { return i; }
+            };
+            observation_matrix observed_covariance, information;
+            Eigen::Matrix<double, ObservationDimension, 1> information_vector;
+            Eigen::Matrix<double, state::DIM, ObservationDimension> cross_covariance;
+            for (int i = 0; i < ObservationDimension; ++i) {
+                const int row = state_index(i);
+                cross_covariance.col(i) = P.col(row);
+                information_vector(i) = measurement.information_vector(row);
+                for (int j = 0; j < ObservationDimension; ++j) {
+                    const int col = state_index(j);
+                    observed_covariance(i, j) = P(row, col);
+                    information(i, j) = measurement.information(row, col);
+                }
+            }
             Eigen::LLT<observation_matrix> prior_factor(observed_covariance);
             if (prior_factor.info() != Eigen::Success) { return false; }
             const observation_matrix L = prior_factor.matrixL();
-            const observation_matrix information = measurement.information.template topLeftCorner<ObservationDimension, ObservationDimension>();
             // 场景可能只有一个平面，Λ可秩亏；I+LᵀΛL仍正定，不逆Λ或完整P。
             const observation_matrix scaled_information = L.transpose() * information * L;
             const observation_matrix information_system = observation_matrix::Identity() + scaled_information;
             Eigen::LDLT<observation_matrix> factor(information_system);
             if (factor.info() != Eigen::Success || !factor.isPositive()) { return false; }
             const Eigen::Matrix<double, state::DIM, ObservationDimension> cross_whitened =
-                L.template triangularView<Eigen::Lower>().solve(P.template leftCols<ObservationDimension>().transpose()).transpose();
+                L.template triangularView<Eigen::Lower>().solve(cross_covariance.transpose()).transpose();
             const Eigen::Matrix<double, state::DIM, 1> delta = cross_whitened *
-                factor.solve((L.transpose() * measurement.information_vector.template head<ObservationDimension>()).eval());
+                factor.solve((L.transpose() * information_vector).eval());
             const observation_matrix reduction = factor.solve(scaled_information);
             const Eigen::Matrix<double, state::DIM, state::DIM> posterior =
                 P - cross_whitened * reduction * cross_whitened.transpose();
@@ -193,10 +211,9 @@ namespace ly_lio {
         inline bool update_lidar_batch(const batch_measurement_result &measurement) {
             if (!measurement.matched_points || !P.allFinite() || !measurement.information.allFinite() ||
                 !measurement.information_vector.allFinite()) { return false; }
-            // 固定模式的外参P行列为零，不能对其12维半正定子块做LLT。
-            // 选择6维系统保留原固定模型的数值路径，状态和P本身始终为30维。
-            return measurement.estimate_extrinsics ? update_lidar_information<12>(measurement) :
-                update_lidar_information<6>(measurement);
+            // 固定模式解12维[p,R,v,omega]，在线模式解18维，状态/P仍为30维。
+            return measurement.estimate_extrinsics ? update_lidar_information<18>(measurement) :
+                update_lidar_information<12>(measurement);
         }
 
         inline bool update_imu() {

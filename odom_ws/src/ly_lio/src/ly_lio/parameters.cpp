@@ -50,15 +50,16 @@ void Parameters::read_parameters(rclcpp::Node &node) {
 
     imu_meas_acc_cov = node.declare_parameter<double>("imu_meas_acc_cov", 0.01);
     imu_meas_omg_cov = node.declare_parameter<double>("imu_meas_omg_cov", 0.01);
-    // 兼容旧配置但明确告知：文档只给omega/a/bg/ba过程噪声，速度不额外加Q。
+    // 旧参数的数值/单位不作隐式迁移，新增速度方差率须显式配置。
     const double legacy_velocity_cov = node.declare_parameter<double>("velocity_cov", 0.0);
     if (legacy_velocity_cov != 0.0) {
-        RCLCPP_WARN(node.get_logger(), "velocity_cov已停用：Batch模型仅通过比力/重力/姿态传播速度协方差");
+        RCLCPP_WARN(node.get_logger(), "velocity_cov已停用且不生效；直接速度过程噪声请显式设置velocity_process_noise_rate（m²/s³）");
     }
     acceleration_cov = node.declare_parameter<double>("acceleration_cov", 500.0);
     omg_cov = node.declare_parameter<double>("omg_cov", 1000.0);
     ba_cov = node.declare_parameter<double>("ba_cov", 0.0001);
     process_noise_reference_dt = node.declare_parameter<double>("process_noise_reference_dt", 0.005);
+    velocity_process_noise_rate = node.declare_parameter<double>("velocity_process_noise_rate", 0.0);
     max_imu_gap = node.declare_parameter<double>("max_imu_gap", 0.1);
     bg_cov = node.declare_parameter<double>("bg_cov", 0.0001);
     lidar_batch_duration = node.declare_parameter<double>("lidar_batch_duration", 0.0001);
@@ -89,6 +90,13 @@ void Parameters::read_parameters(rclcpp::Node &node) {
 
     const auto positive = [](double value) { return std::isfinite(value) && value > 0; };
     const auto nonnegative = [](double value) { return std::isfinite(value) && value >= 0; };
+    if (!nonnegative(velocity_process_noise_rate)) {
+        throw std::invalid_argument("velocity_process_noise_rate必须为有限且非负的速度协方差增长率（m²/s³）");
+    }
+    if (positive(process_noise_reference_dt) &&
+        !std::isfinite(velocity_process_noise_rate / process_noise_reference_dt)) {
+        throw std::invalid_argument("velocity_process_noise_rate/process_noise_reference_dt必须有限");
+    }
     // 配置上限严格小于10ms；实际批长还会被下一IMU采样和扫描末端提前截断。
     if (!positive(lidar_batch_duration) || lidar_batch_duration >= 0.010) {
         throw std::invalid_argument("lidar_batch_duration必须为有限秒数且满足0<duration<0.010（严格小于10ms）");

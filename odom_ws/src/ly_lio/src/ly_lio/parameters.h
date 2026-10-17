@@ -46,6 +46,8 @@ namespace ly_lio {
         double bg_cov;
         double ba_cov;
         double process_noise_reference_dt = 0.005;
+        // 直接速度协方差增长率，单位m²/s³；0保持旧配置，无额外点数上限。
+        double velocity_process_noise_rate = 0.0;
         double max_imu_gap = 0.1;  // s，超限/队列截断后重新初始化，禁止跨缺段积分。
 
         // 文档Batch模型：保留真实点时间，补偿到批末后联合匹配历史地图。

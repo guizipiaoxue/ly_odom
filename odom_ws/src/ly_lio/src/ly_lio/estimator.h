@@ -13,11 +13,44 @@
 
 namespace ly_lio {
 
-    // 运动补偿冻结在同一批末先验；保留原LiDAR点及旋转，计算外参的真实导数。
+    // 保留原始测量和相对批末时间；补偿是批末状态的函数，不再视作已知常量。
     struct DeskewedPoint {
-        Eigen::Vector3d point_imu = Eigen::Vector3d::Zero();
         Eigen::Vector3d point_lidar = Eigen::Vector3d::Zero();
-        Eigen::Matrix3d rotation_to_end = Eigen::Matrix3d::Identity();
+        double time_offset = 0.0;  // t_point-t_end，批内非正。
+
+        [[nodiscard]] Eigen::Vector3d point_at_end(const state &s) const {
+            return exp<double>(s.omg * time_offset) * (s.offset_R_L_I * point_lidar + s.offset_T_L_I) +
+                s.rotation.transpose() * s.velocity * time_offset;
+        }
+
+        [[nodiscard]] Eigen::Vector3d point_world(const state &s) const {
+            // 与R*point_at_end+p等价；直接表达使姿态对平移补偿的抵消显式可见。
+            return s.position + s.rotation * (exp<double>(s.omg * time_offset) *
+                (s.offset_R_L_I * point_lidar + s.offset_T_L_I)) + s.velocity * time_offset;
+        }
+
+        [[nodiscard]] Eigen::Matrix<double, 1, 18> jacobian(
+            const state &s, const Eigen::Vector3d &normal, bool estimate_extrinsics) const {
+            const Eigen::Vector3d phi = s.omg * time_offset;
+            const Eigen::Matrix3d D = exp<double>(phi);
+            const Eigen::Vector3d u = s.offset_R_L_I * point_lidar + s.offset_T_L_I;
+            const Eigen::Vector3d C = s.rotation.transpose() * normal;
+            const Eigen::Vector3d normal_at_sample = D.transpose() * C;
+            Eigen::Matrix<double, 1, 18> H = Eigen::Matrix<double, 1, 18>::Zero();
+            H.segment<3>(state::position_index) = normal.transpose();
+            // 不能用包含R^T*v*dt的完整补偿点叉乘C，否则多出虚假的姿态项。
+            H.segment<3>(state::rotation_index) = (D * u).cross(C).transpose();
+            H.segment<3>(state::velocity_index) = time_offset * normal.transpose();
+            // Exp(phi+dphi)=Exp(phi)*Exp(J_r(phi)*dphi)，J_r(phi)=A_matrix(-phi)。
+            H.segment<3>(state::omg_index) =
+                time_offset * u.cross(normal_at_sample).transpose() * A_matrix<double>(-phi);
+            if (estimate_extrinsics) {
+                H.segment<3>(state::offset_R_L_I_index) =
+                    point_lidar.cross(s.offset_R_L_I.transpose() * normal_at_sample).transpose();
+                H.segment<3>(state::offset_T_L_I_index) = normal_at_sample.transpose();
+            }
+            return H;
+        }
     };
 
     class Estimator {
@@ -43,8 +76,7 @@ namespace ly_lio {
 
         [[nodiscard]] Eigen::Matrix<state::value_type, state::DIM, state::DIM> process_noise_cov() const;
 
-        // 点必须用同一先验补偿到batch末端IMU系；返回成功联合更新的匹配点数。
-        // 在线外参雅可比保留原点与补偿旋转，不能把补偿后的点视为原LiDAR点。
+        // 点的相对时间以共同批末为零；一次先验线性化包含补偿对速度/角速度的导数。
         size_t update_lidar_batch(const std::vector<DeskewedPoint> &points);
 
         void h_imu(const state &s, imu_measurement_result &measurement_result);

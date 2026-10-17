@@ -15,6 +15,9 @@ LyLio::LyLio(rclcpp::Node &node) {
     estimator.Lidar_R_wrt_IMU = parameters.extrinsic_R;
     estimator.imu_acceleration_scale = parameters.gravity.norm() / parameters.acc_norm;
     Q = estimator.process_noise_cov();
+    RCLCPP_INFO(node.get_logger(),
+        "直接速度过程噪声率 velocity_process_noise_rate=%.9g m²/s³（速度方差增量=rate*dt，参考周期=%.9g s）",
+        parameters.velocity_process_noise_rate, parameters.process_noise_reference_dt);
     reset();
 }
 void LyLio::clear_tracking_diagnostics() {
@@ -207,17 +210,11 @@ void LyLio::process_scan(const ScanFrame &scan) {
             time_current = batch_end;
             // 式3.44–3.47：所有点先变至IMU原点，再补偿到批末IMU系。
             // v存于世界系，必须先用R_end^T转轴；exp(0)也合法，无需omega归一化。
-            // 用同一个批末先验冻结去畸变，联合更新后不重新用omega/v补偿。
-            const state prior = estimator.kf.x;
-            const Eigen::Vector3d omega = prior.omg;
-            const Eigen::Vector3d velocity_imu = prior.rotation.transpose() * prior.velocity;
+            // 保留原点/时间，补偿及其H统一在批末先验线性化，后验按同一模型重算。
             const auto deskew = [&](const common::Point &point) -> DeskewedPoint {
-                const double dt = point.timestamp - batch_end;
                 DeskewedPoint result;
                 result.point_lidar = point.position.cast<double>();
-                result.rotation_to_end = exp<double>(omega * dt);
-                result.point_imu = result.rotation_to_end *
-                    (prior.offset_R_L_I * result.point_lidar + prior.offset_T_L_I) + velocity_imu * dt;
+                result.time_offset = point.timestamp - batch_end;
                 return result;
             };
             batch_points.clear();
@@ -227,18 +224,11 @@ void LyLio::process_scan(const ScanFrame &scan) {
             tracking_points += batch_points.size();
             matched_points += estimator.update_lidar_batch(batch_points);
             const auto &posterior = estimator.kf.x;
-            const auto posterior_point = [&](const DeskewedPoint &point) -> Eigen::Vector3d {
-                if (!parameters.extrinsic_est_en) { return point.point_imu; }
-                // 仅更新标定部分，冻结本批的运动补偿，注册云与入图点使用同一后验。
-                return point.point_imu + point.rotation_to_end *
-                    ((posterior.offset_R_L_I - prior.offset_R_L_I) * point.point_lidar +
-                     posterior.offset_T_L_I - prior.offset_T_L_I);
-            };
             for (const auto &point : batch_points) {
-                map_increment.push_back((posterior.rotation * posterior_point(point) + posterior.position).cast<float>());
+                map_increment.push_back(point.point_world(posterior).cast<float>());
             }
             for (const auto &point : batch_dense) {
-                registered.push_back((posterior.rotation * posterior_point(point) + posterior.position).cast<float>());
+                registered.push_back(point.point_world(posterior).cast<float>());
             }
             laser_index = laser_end;
             dense_index = dense_end;

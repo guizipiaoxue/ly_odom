@@ -28,6 +28,8 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(rcl_yaml_param_parser REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -36,6 +38,9 @@ find_package(yaml_cpp_vendor REQUIRED)
 find_package(yaml-cpp REQUIRED)
 # 标准 PointCloud2 模式不依赖 Livox；找到驱动时再启用自定义消息适配器。
 find_package(livox_ros_driver2 QUIET)
+
+rosidl_generate_interfaces(${PROJECT_NAME} "msg/ScanSession.msg" DEPENDENCIES std_msgs)
+rosidl_get_typesupport_target(ly_lio_typesupport ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 add_library(ly_lio_core SHARED
   src/ly_lio/parameters.cpp
@@ -59,7 +64,7 @@ target_precompile_headers(ly_lio_core PRIVATE
   "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/include/pch.h>")
 
 add_library(ly_lio_component SHARED src/ly_lio_node.cpp src/terminal_dashboard.cpp)
-target_link_libraries(ly_lio_component ly_lio_core yaml-cpp)
+target_link_libraries(ly_lio_component ly_lio_core yaml-cpp ${ly_lio_typesupport})
 ament_target_dependencies(ly_lio_component
   ament_index_cpp rcl rclcpp rclcpp_components rcl_yaml_param_parser
   sensor_msgs geometry_msgs nav_msgs tf2_ros std_srvs)
@@ -87,4 +92,5 @@ install(FILES README.md LICENSE.txt THIRD_PARTY_NOTICES.md DESTINATION share/${P
 ament_export_targets(ly_lioTargets HAS_LIBRARY_TARGET)
 ament_export_dependencies(rclcpp Eigen3 OpenMP)
 
+ament_export_dependencies(rosidl_default_runtime)
 ament_package()

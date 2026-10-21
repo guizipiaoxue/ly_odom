@@ -1,7 +1,7 @@
 # MID360 里程计配置：节点/组件直接用 ROS 原生 YAML 解析器读取；重启生效。
 # 优先读工作区源码文件，独立安装时回退到包 share/config；与启动目录无关。
 # 显式 --params-file、-p 和组件 NodeOptions 参数仍按 ROS 优先级覆盖此处默认值。
-# 输入原始传感器数据；安装外参仅用于输出位姿，不预先平移 IMU 测量原点。
+# 输入原始传感器数据；安装外参用于输出机体位姿及去畸变机体系点云，不预先平移 IMU 测量原点。
 ly_lio:
   ros__parameters:
     use_sim_time: false
@@ -12,9 +12,9 @@ ly_lio:
     imu_frame: livox_frame
     body_frame: baselink
     odom_frame: odom
-    # 直接读取两个工作区共享的安装文件；优先源码 pcl_ws/config，再回退到包 share。
+    # 安装外参归属 ly_lio/config，源码优先、独立部署回退到本包 share。
     # 也可填绝对路径；直接配置 imu_to_body_R/T 时须显式将本项设为空字符串。
-    body_extrinsic_path: package://pcl_publisher/config/lidar2baselink.yaml
+    body_extrinsic_path: package://ly_lio/config/lidar2baselink.yaml
     publish_sensor_tf: true         # baselink→livox_frame 固定安装 TF。
     # 当前 Livox 驱动的 FLOAT64 timestamp 是相对 header.stamp 的纳秒偏移。
     timestamp_mode: relative
@@ -73,12 +73,12 @@ ly_lio:
     ba_cov: 0.0001
     bg_cov: 0.0001
 
-    # 默认扫描末点发布Odometry/TF；true则额外按实际批末时间发布。
+    # 默认按目标频率选择Batch后验；true则发布全部真实批末Odometry。
+    odometry_publish_rate: 100.0  # Hz；真实Batch后验选样，扫描末必发，无动态TF
     publish_odometry_per_batch: false
-    publish_tf: true
     publish_path: true
     path_max_poses: 10000
-    path_publish_interval: 0.1     # Path最多10Hz发送完整历史，TF/Odom默认为扫描频率。
+    path_publish_interval: 0.1     # Path最多10Hz；Odom独立按目标频率选样。
     save_pcd: false
     save_map_resolution: 0.02
     map_path: maps/ly_lio.pcd       # 相对路径基于进程工作目录，也可填绝对路径。

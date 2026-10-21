@@ -20,8 +20,7 @@ ament_target_dependencies(ly_bag_recorder
 target_link_libraries(ly_bag_recorder yaml-cpp)
 
 install(TARGETS ly_bag_recorder DESTINATION lib/${PROJECT_NAME})
-# 此处只安装静态副本；运行时从ament位置查找配置，不编译进源码绝对路径。
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/rosbag.yaml"
-  DESTINATION share/${PROJECT_NAME}/config)
+# 配置归属本包；运行时源码优先、share回退，不编译进源码绝对路径。
+install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
 ament_package()

@@ -10,7 +10,20 @@ if (( EUID != 0 )); then
     echo '需要管理员权限安装软件包和 systemd 配置，请执行 sudo ./PTP/install.sh [网卡]。' >&2
     exit 1
 fi
-PTP_INTERFACE="${1:-$(python3 "$PTP_DIR/host_check.py" --interface-only)}"
+PTP_INTERFACE="${1:-}"
+if [[ -z "$PTP_INTERFACE" ]]; then
+    # 保留原默认目标的路由选卡逻辑，不依赖独立检查工具。
+    PTP_INTERFACE="$(python3 - <<'PY'
+import json
+import subprocess
+routes = json.loads(subprocess.check_output(
+    ['ip', '-j', 'route', 'get', '192.168.1.3'], text=True, timeout=5))
+if not routes or 'dev' not in routes[0]:
+    raise SystemExit('未找到到 192.168.1.3 的路由，请显式指定有线网卡')
+print(routes[0]['dev'])
+PY
+)"
+fi
 [[ "$PTP_INTERFACE" =~ ^[a-zA-Z0-9_.-]+$ && -d "/sys/class/net/$PTP_INTERFACE" ]] || {
     echo '网卡无效。' >&2; exit 1;
 }
@@ -37,7 +50,7 @@ if systemctl cat "sentry-ptp4l@$PTP_INTERFACE.service" >/dev/null 2>&1 &&
     echo "复用 sentry PTP 服务并确保开机自启，不覆盖配置或重启运行实例：$PTP_INTERFACE"
     systemctl enable --now "sentry-ptp4l@$PTP_INTERFACE.service" "sentry-phc2sys@$PTP_INTERFACE.service"
     systemctl status "sentry-ptp4l@$PTP_INTERFACE" "sentry-phc2sys@$PTP_INTERFACE" --no-pager
-    echo "后续只需 ./scripts/odom.sh；检查用 ./PTP/check_ptp.sh status $PTP_INTERFACE。"
+    echo '后续只需 ./scripts/odom.sh；部署与维护经验见 PTP/AGENTS.md。'
     exit 0
 fi
 if systemctl is-active --quiet "ly-ptp4l@$PTP_INTERFACE.service"; then
@@ -53,7 +66,7 @@ if pgrep -x ptp4l >/dev/null || pgrep -x phc2sys >/dev/null; then
 fi
 install -d /etc/linuxptp/ly-odom /usr/local/libexec/ly-ptp
 sed "s/@INTERFACE@/$PTP_INTERFACE/g" "$PTP_DIR/master.conf.in" > "/etc/linuxptp/ly-odom/master-$PTP_INTERFACE.conf"
-install -m 644 "$PTP_DIR/host_check.py" "$PTP_DIR/bootstrap.py" /usr/local/libexec/ly-ptp/
+install -m 644 "$PTP_DIR/bootstrap.py" /usr/local/libexec/ly-ptp/
 install -m 644 "$PTP_DIR"/systemd/*.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now "ly-ptp4l@$PTP_INTERFACE.service" "ly-phc2sys@$PTP_INTERFACE.service"

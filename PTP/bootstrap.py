@@ -5,7 +5,26 @@ from pathlib import Path
 import sys
 import time
 
-from host_check import clock_device, processes
+
+def clock_device(interface):
+    clocks = list((Path('/sys/class/net') / interface / 'device/ptp').glob('ptp[0-9]*'))
+    if len(clocks) != 1:
+        raise RuntimeError(f'{interface} 没有唯一的硬件 PHC，不能使用本硬件 PTP 配置')
+    return '/dev/' + clocks[0].name
+
+
+def processes(program):
+    # 初始化前只读确认没有正在运行的授时进程。
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            args = entry.joinpath('cmdline').read_bytes().decode().strip('\0').split('\0')
+            if args and Path(args[0]).name == program:
+                return True
+        except (OSError, UnicodeError):
+            continue
+    return False
 
 
 def bootstrap(interface, config):

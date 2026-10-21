@@ -33,6 +33,8 @@ void LyLio::reset() {
     estimator.reset();
     time_current = 0.0;
     calibration_time = last_odometry_time = -1.0;
+    odometry_scan_end = next_odometry_time = -1.0;
+    odometry_slots_to_end = 0.0;
     imu_calibrated = is_init = false;
     initial_map_scans = initial_map_points = 0;
     // 用户显式reset建立新的统计周期；构造时也走这一分支。
@@ -232,7 +234,7 @@ void LyLio::process_scan(const ScanFrame &scan) {
             }
             laser_index = laser_end;
             dense_index = dense_end;
-            if (parameters.publish_odometry_per_batch) { publish_odometry(batch_end); }
+            publish_odometry(batch_end, scan.timestamp_end);
             continue;
         }
         // 距离过滤后即便末段没有点，仍推进到原始有效末点，保证输出时间定义不变。
@@ -240,7 +242,7 @@ void LyLio::process_scan(const ScanFrame &scan) {
         estimator.kf.predict_state(scan.timestamp_end);
         time_current = scan.timestamp_end;
         for (const auto &point : map_increment) { estimator.ivox->add_point(point); }
-        publish_odometry(scan.timestamp_end);
+        publish_odometry(scan.timestamp_end, scan.timestamp_end);
         if (pointcloud_callback && !registered.empty()) { pointcloud_callback(scan.timestamp_end, registered); }
         const double elapsed_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - processing_start).count();
@@ -267,6 +269,8 @@ void LyLio::handle_once() {
         preprocess.discard_scans();
         time_current = 0.0;
         calibration_time = last_odometry_time = -1.0;
+        odometry_scan_end = next_odometry_time = -1.0;
+        odometry_slots_to_end = 0.0;
         imu_calibrated = is_init = false;
         initial_map_scans = initial_map_points = 0;
         ++diagnostic_state.resets;
@@ -288,8 +292,23 @@ void LyLio::handle_once() {
 }
 void LyLio::set_pointcloud_callback(std::function<void(double, const std::vector<Eigen::Vector3f> &)> callback) { pointcloud_callback = std::move(callback); }
 void LyLio::set_odometry_callback(std::function<void(const common::Odometry &)> callback) { odometry_callback = std::move(callback); }
-void LyLio::publish_odometry(double timestamp) {
-    if (!odometry_callback || !std::isfinite(timestamp) || timestamp <= last_odometry_time) { return; }
+void LyLio::publish_odometry(double timestamp, double scan_end) {
+    if (!odometry_callback || !std::isfinite(timestamp) || !std::isfinite(scan_end) ||
+        timestamp > scan_end || timestamp <= last_odometry_time) { return; }
+    if (!parameters.publish_odometry_per_batch) {
+        const double interval = 1.0 / parameters.odometry_publish_rate;
+        if (scan_end != odometry_scan_end) {
+            odometry_scan_end = scan_end;
+            // 扫描末占一个槽；向前划槽，取槽后的第一个真实批末，不插值/外推。
+            odometry_slots_to_end = std::floor((scan_end - timestamp) / interval);
+            next_odometry_time = scan_end - odometry_slots_to_end * interval;
+        }
+        if (timestamp != scan_end &&
+            (timestamp < next_odometry_time || next_odometry_time >= scan_end)) { return; }
+        odometry_slots_to_end = std::max(0.0, odometry_slots_to_end -
+            (std::floor((timestamp - next_odometry_time) / interval) + 1.0));
+        next_odometry_time = scan_end - odometry_slots_to_end * interval;
+    }
     last_odometry_time = timestamp;
     common::Odometry odometry;
     const auto &x = estimator.kf.x;

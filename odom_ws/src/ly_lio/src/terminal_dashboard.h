@@ -14,10 +14,10 @@ public:
     static double steady_seconds();
     TerminalDashboard(bool clear_screen, double stale_timeout,
                       std::string world_frame, std::string body_frame);
-    // 下面四个写入口只由节点的默认互斥回调组调用，不在逐点循环中做终端IO。
+    // 写入口只由节点的默认互斥回调组调用，不在逐点循环中做终端IO。
     void lidar_received(double sensor_time);
     void imu_received(double sensor_time);
-    void odometry_published(const common::Odometry &body, bool tf_published,
+    void odometry_published(const common::Odometry &body,
                             const state &imu_state, const Eigen::Matrix3d &R_BI);
     void reset_pose();
     void update(const LioDiagnostics &diagnostics);
@@ -32,7 +32,7 @@ private:
     };
     struct Snapshot {
         LioDiagnostics core;
-        Stream lidar, imu, odom, tf, processed;
+        Stream lidar, imu, odom, processed;
         bool has_pose = false;
         double first_pose_stamp = -1;
         Eigen::Vector3d position = Eigen::Vector3d::Zero();

@@ -64,6 +64,7 @@ namespace ly_lio {
         double plane_threshold = 0.1;
         double match_sqaured = 81.0;
         bool publish_odometry_per_batch = false;
+        double odometry_publish_rate = 100.0;  // Hz；只选择真实Batch后验，扫描末必发。
 
         void read_parameters(rclcpp::Node &node);
     };

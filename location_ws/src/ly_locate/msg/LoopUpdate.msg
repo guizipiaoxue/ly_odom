@@ -1,0 +1,16 @@
+# 原子完整图快照；stamp为最新关键帧采样时刻，不是优化完成的now。
+std_msgs/Header header
+string session_id
+string source_session_id
+string odom_frame
+string body_frame
+uint64 revision
+bool loop_closed
+uint64 loop_from
+uint64 loop_to
+float64 scan_context_distance
+float64 registration_rmse
+float64 overlap
+ly_locate/KeyframePose[] poses
+# 累计已接受约束，晚订阅/丢中间事件仍可追溯回环，不只有最新一帧标记。
+ly_locate/LoopConstraint[] constraints

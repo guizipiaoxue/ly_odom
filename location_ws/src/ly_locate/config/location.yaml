@@ -1,0 +1,67 @@
+# 默认保守值是待实包冻结验证的初始工程配置，不代表已达成零误回环。
+location_loop:
+  ros__parameters:
+    cloud_topic: /ly_lio/cloud_registered
+    odometry_topic: /ly_lio/odometry
+    session_topic: /ly_lio/scan_session
+    odom_frame: odom
+    body_frame: baselink
+    map_frame: map
+    archive_directory: maps/location
+    keyframe_distance: 0.75
+    keyframe_angle: 0.20
+    min_keyframe_interval: 0.30
+    keyframe_leaf: 0.20
+    min_cloud_points: 300
+    max_keyframes: 20000
+    input_queue_size: 100
+    odometry_wait_seconds: 2.0
+    scan_context_radius: 60.0
+    scan_context_threshold: 0.10
+    scan_context_margin: 0.03
+    scan_context_ratio: 0.75
+    min_descriptor_bins: 80
+    min_descriptor_sectors: 30
+    candidate_count: 20
+    exclude_recent_keyframes: 30
+    min_loop_time: 30.0
+    min_loop_travel: 15.0
+    candidate_radius: 8.0
+    distinct_candidate_distance: 5.0
+    confirm_frames: 3
+    confirm_translation: 0.25
+    confirm_rotation: 0.08
+    confirm_min_motion: 1.0
+    loop_cooldown_frames: 10
+    icp_correspondence: 0.5
+    icp_inlier_distance: 0.20
+    icp_max_rmse: 0.10
+    icp_min_overlap: 0.70
+    icp_min_inliers: 150
+    icp_iterations: 60
+    icp_cycle_translation: 0.08
+    icp_cycle_rotation: 0.035
+    max_translation_correction: 1.5
+    max_rotation_correction: 0.35
+    min_information_ratio: 0.002
+    odom_rotation_sigma: 0.02
+    odom_translation_sigma: 0.10
+    loop_rotation_sigma: 0.03
+    loop_translation_sigma: 0.08
+    graph_max_odom_translation: 0.5
+    graph_max_odom_rotation: 0.15
+    graph_max_loop_translation: 0.15
+    graph_max_loop_rotation: 0.08
+location_map:
+  ros__parameters:
+    odometry_topic: /ly_lio/odometry
+    session_topic: /ly_lio/scan_session
+    odom_frame: odom
+    body_frame: baselink
+    map_frame: map
+    map_leaf: 0.20
+    map_publish_interval: 2.0
+    save_directory: maps/location_export
+    save_on_shutdown: true  # Ctrl+C/SIGTERM后导出最新收到的完整图；缺帧明确报错，不保存残图
+    odometry_wait_seconds: 2.0
+    input_queue_size: 1000

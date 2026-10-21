@@ -84,6 +84,11 @@ void Parameters::read_parameters(rclcpp::Node &node) {
     plane_threshold = node.declare_parameter<double>("plane_threshold", 0.1);
     match_sqaured = node.declare_parameter<double>("match_sqaured", 81.0);
     publish_odometry_per_batch = node.declare_parameter<bool>("publish_odometry_per_batch", false);
+    odometry_publish_rate = node.declare_parameter<double>("odometry_publish_rate", 100.0);
+    if (!std::isfinite(odometry_publish_rate) || odometry_publish_rate <= 0 ||
+        !std::isfinite(1.0 / odometry_publish_rate)) {
+        throw std::invalid_argument("odometry_publish_rate必须为有限正频率（Hz）");
+    }
     if (node.declare_parameter<bool>("publish_odometry_without_downsample", false)) {
         RCLCPP_WARN(node.get_logger(), "publish_odometry_without_downsample已弃用；按publish_odometry_per_batch=true输出真实批末位姿");
         publish_odometry_per_batch = true;

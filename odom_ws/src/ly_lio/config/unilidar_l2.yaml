@@ -59,8 +59,8 @@ ly_lio:
     ba_cov: 0.0001
     bg_cov: 0.0001
 
+    odometry_publish_rate: 100.0  # Hz；真实Batch后验选样，扫描末必发，无动态TF
     publish_odometry_per_batch: false
-    publish_tf: true
     publish_path: true
     path_max_poses: 10000
     path_publish_interval: 0.1

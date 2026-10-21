@@ -34,6 +34,8 @@ class LyLio {
     double time_current = 0.0;
     double calibration_time = -1.0;
     double last_odometry_time = -1.0;
+    double odometry_scan_end = -1.0, next_odometry_time = -1.0;
+    double odometry_slots_to_end = 0.0;
     bool imu_calibrated = false;
     bool is_init = false;
     size_t initial_map_scans = 0;
@@ -49,7 +51,7 @@ class LyLio {
     bool initialize();
     void clear_tracking_diagnostics();
     void process_scan(const ScanFrame &scan);
-    void publish_odometry(double timestamp);
+    void publish_odometry(double timestamp, double scan_end);
 public:
     Eigen::Matrix<double, state::DIM, state::DIM> Q;
     explicit LyLio(rclcpp::Node &node);

@@ -1,0 +1,31 @@
+<?xml version='1.0' encoding='utf-8'?>
+<package format="3">
+  <name>ly_locate</name>
+  <version>0.1.0</version>
+  <description>ly_lio在线关键帧建图、保守Scan Context回环与GTSAM位姿图。</description>
+  <maintainer email="52013141312a@gmail.com">hustlyrm</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+  <depend>ly_lio</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>tf2_ros</depend>
+  <depend>eigen</depend>
+  <depend>libpcl-all-dev</depend>
+  <depend>gtsam</depend>
+  <depend>yaml-cpp</depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

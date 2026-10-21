@@ -12,11 +12,11 @@
 #include "util/pointcloud_mapping.h"
 #include "terminal_dashboard.h"
 #include <nav_msgs/msg/odometry.hpp>
+#include <ly_lio/msg/scan_session.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_srvs/srv/trigger.hpp>
-#include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <mutex>
 
@@ -24,12 +24,13 @@ namespace ly_lio {
 // 默认互斥回调组串行更新算法；文件服务单独分组，快照加锁后释放再进行磁盘写入。
 class LyLioNode : public rclcpp::Node {
     std::unique_ptr<LyLio> lio_;
+    rclcpp::Publisher<ly_lio::msg::ScanSession>::SharedPtr session_publisher_;
+    std::string output_session_id_;
     std::unique_ptr<LidarAdapterBase> lidar_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odometry_publisher_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_publisher_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_publisher_;
-    std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     std::unique_ptr<tf2_ros::StaticTransformBroadcaster> sensor_tf_broadcaster_;
     rclcpp::CallbackGroup::SharedPtr save_group_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_service_;
@@ -46,11 +47,10 @@ class LyLioNode : public rclcpp::Node {
     Eigen::Matrix3d R_BL_ = Eigen::Matrix3d::Identity();
     Eigen::Vector3d t_BL_ = Eigen::Vector3d::Zero();
     bool body_from_lidar_mount_ = false;
-    double last_tf_time_ = -1;
     double last_path_time_ = -1;
     double path_publish_interval_ = 0.1;
     double save_resolution_ = 0.02;
-    bool publish_tf_, publish_path_;
+    bool publish_path_;
     int path_max_poses_;
     void publish_odometry(const common::Odometry &odometry);
     void publish_cloud(double timestamp, const std::vector<Eigen::Vector3f> &points);

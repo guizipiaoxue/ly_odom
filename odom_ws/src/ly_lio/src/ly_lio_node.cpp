@@ -17,6 +17,9 @@
 #include <filesystem>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <map>
+#include <random>
+#include <sstream>
+#include <iomanip>
 #include <memory>
 #include <rcl/arguments.h>
 #include <rcl/remap.h>
@@ -28,6 +31,16 @@
 
 namespace ly_lio {
 namespace {
+// 每次重建 odom 原点都生成新会话，防止下游把重置前后的关键帧拼在一起。
+std::string new_output_session() {
+    std::random_device random;
+    std::ostringstream out;
+    out << std::hex;
+    for (int i = 0; i < 4; ++i) {
+        out << std::setw(8) << std::setfill('0') << random();
+    }
+    return out.str();
+}
 // 从已定位的包目录向上找源码，不依赖当前工作目录或编译机器的绝对路径。
 std::filesystem::path source_file_near(std::filesystem::path directory,
     const std::vector<std::filesystem::path> &relative_paths) {
@@ -167,13 +180,12 @@ std::string body_extrinsic_file(const std::string &configured_path) {
     for (const auto &part : relative) {
         if (part == "..") { throw std::invalid_argument("外参 package:// 路径不能跳出包目录"); }
     }
-    if (package == "pcl_publisher" && relative == "config/lidar2baselink.yaml") {
-        // 两个工作区共用同一个物理安装文件，节点直接读取，不生成临时副本。
-        const auto source = source_file_near(default_config_file().parent_path(),
-            {"pcl_ws/config/lidar2baselink.yaml"});
-        if (!source.empty()) { return source.string(); }
+    if (package == "ly_lio") {
+        // 安装外参归属里程计包；源码优先、独立安装使用 share，不依赖转换节点。
         const auto share = std::filesystem::path(ament_index_cpp::get_package_share_directory(package));
-        const auto package_source = source_file_near(share, {"pcl_ws/config/lidar2baselink.yaml"});
+        const auto package_source = source_file_near(share,
+            {std::filesystem::path("src/ly_lio") / relative,
+             std::filesystem::path("odom_ws/src/ly_lio") / relative});
         return (package_source.empty() ? share / relative : package_source).string();
     }
     return (std::filesystem::path(ament_index_cpp::get_package_share_directory(package)) / relative).string();
@@ -252,7 +264,6 @@ LyLioNode::LyLioNode(const rclcpp::NodeOptions &options)
         throw std::invalid_argument("IMU→机体外参必须是有限刚体变换；同名坐标系必须使用单位外参");
     }
     R_BI_ = Eigen::Quaterniond(R_BI_).normalized().toRotationMatrix();
-    publish_tf_ = declare_parameter<bool>("publish_tf", true);
     publish_path_ = declare_parameter<bool>("publish_path", true);
     path_max_poses_ = declare_parameter<int>("path_max_poses", 10000);
     path_publish_interval_ = declare_parameter<double>("path_publish_interval", 0.1);
@@ -302,11 +313,14 @@ LyLioNode::LyLioNode(const rclcpp::NodeOptions &options)
     }
     // 回放或积压恢复时可能连续处理多帧，保留足够的发布队列深度。
     const auto output_qos = rclcpp::QoS(100).reliable();
+    output_session_id_ = new_output_session();
+    session_publisher_ = create_publisher<ly_lio::msg::ScanSession>("ly_lio/scan_session",
+        rclcpp::QoS(1000).reliable().transient_local());
     odometry_publisher_ = create_publisher<nav_msgs::msg::Odometry>("ly_lio/odometry", output_qos);
-    cloud_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("ly_lio/cloud_registered", output_qos);
+    // 整帧云不沿用高频小消息的深队列，限制DDS保留的稠密点云数量。
+    cloud_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("ly_lio/cloud_registered", rclcpp::QoS(10).reliable());
     path_publisher_ = create_publisher<nav_msgs::msg::Path>("ly_lio/path", rclcpp::QoS(10).reliable());
-    tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-    if (publish_tf_ && publish_sensor_tf && body_frame_ != lidar_frame_) {
+    if (publish_sensor_tf && body_frame_ != lidar_frame_) {
         sensor_tf_broadcaster_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(*this);
         geometry_msgs::msg::TransformStamped tf;
         tf.header.stamp = now();
@@ -388,13 +402,14 @@ LyLioNode::LyLioNode(const rclcpp::NodeOptions &options)
                 process_pending();
             });
     }
-    RCLCPP_INFO(get_logger(), "接收原始 %s 和 %s；状态原点=%s；输出 %s→%s；逐点时间模式=%s，缩放=%g",
+    RCLCPP_INFO(get_logger(), "接收原始 %s 和 %s；状态原点=%s；Odometry输出 %s→%s（不广播动态TF）；逐点时间模式=%s，缩放=%g",
         lidar_topic.c_str(), imu_topic.c_str(), imu_frame_.c_str(), odom_frame_.c_str(), body_frame_.c_str(), mode.c_str(), scale);
 }
 
 void LyLioNode::clear_output_history() {
+    output_session_id_ = new_output_session();
     path_.poses.clear();
-    last_tf_time_ = last_path_time_ = -1;
+    last_path_time_ = -1;
     if (terminal_) {
         terminal_->reset_pose();
         terminal_->update(lio_->diagnostics());
@@ -446,23 +461,16 @@ void LyLioNode::publish_odometry(const common::Odometry &imu_odometry) {
             msg.twist.covariance[row * 6 + col] = odometry.twist_covariance(row, col);
         }
     }
+    // 以精确位姿stamp关联会话，跨话题乱序也不混入不同odom原点的点云。
+    ly_lio::msg::ScanSession session;
+    session.header.stamp = ros_time(odometry.timestamp);
+    session.header.frame_id = odom_frame_;
+    session.session_id = output_session_id_;
+    session_publisher_->publish(session);
     odometry_publisher_->publish(msg);
-    const bool tf_sent = publish_tf_ && odometry.timestamp > last_tf_time_;
-    if (tf_sent) {
-        geometry_msgs::msg::TransformStamped tf;
-        tf.header = msg.header;
-        tf.child_frame_id = body_frame_;
-        tf.transform.translation.x = odometry.position.x();
-        tf.transform.translation.y = odometry.position.y();
-        tf.transform.translation.z = odometry.position.z();
-        tf.transform.rotation = msg.pose.pose.orientation;
-        // TF 与里程计都使用转换后的 baselink 位姿，安装外参只组合一次。
-        tf_broadcaster_->sendTransform(tf);
-        last_tf_time_ = odometry.timestamp;
-    }
     if (terminal_) {
         // 面板使用与已发布机体位姿同一时刻的状态，偏置只旋转表达轴，不伪造原点加速度。
-        terminal_->odometry_published(odometry, tf_sent, lio_->current_state(), R_BI_);
+        terminal_->odometry_published(odometry, lio_->current_state(), R_BI_);
     }
     if (publish_path_) {
         geometry_msgs::msg::PoseStamped pose;
@@ -484,9 +492,14 @@ void LyLioNode::publish_odometry(const common::Odometry &imu_odometry) {
 
 void LyLioNode::publish_cloud(double timestamp, const std::vector<Eigen::Vector3f> &points) {
     if (cloud_publisher_->get_subscription_count() > 0) {
+        // 各批后验点已在 odom 中；统一用扫描末机体位姿的逆变到当前 baselink。
+        // T_BO = T_BI * inverse(T_OI)，包含安装旋转及杆臂，不能只改 frame_id。
+        const auto &x = lio_->current_state();
+        const Eigen::Matrix3d R_BO = R_BI_ * x.rotation.transpose();
+        const Eigen::Vector3d t_BO = t_BI_ - R_BO * x.position;
         sensor_msgs::msg::PointCloud2 msg;
         msg.header.stamp = ros_time(timestamp);
-        msg.header.frame_id = odom_frame_;
+        msg.header.frame_id = body_frame_;
         msg.width = static_cast<uint32_t>(points.size());
         msg.height = 1;
         msg.point_step = 12;
@@ -504,12 +517,13 @@ void LyLioNode::publish_cloud(double timestamp, const std::vector<Eigen::Vector3
         }
         msg.data.resize(msg.row_step);
         for (size_t index = 0; index < points.size(); ++index) {
-            // 点已在 odom 中；再次施加 lidar→机体外参会使地图和里程计不一致。
-            std::memcpy(msg.data.data() + index * msg.point_step, points[index].data(), 3 * sizeof(float));
+            const Eigen::Vector3f point_body = (R_BO * points[index].cast<double>() + t_BO).cast<float>();
+            std::memcpy(msg.data.data() + index * msg.point_step, point_body.data(), 3 * sizeof(float));
         }
         cloud_publisher_->publish(msg);
     }
     std::lock_guard<std::mutex> lock(map_mutex_);
+    // 独立累计导出地图仍使用固定 odom 系，不能累加运动机体系的局部点。
     if (saved_map_) { saved_map_->add_pointcloud(points); }
 }
 }  // namespace ly_lio

@@ -61,10 +61,9 @@ void TerminalDashboard::Stream::observe(double stamp) {
 }
 void TerminalDashboard::lidar_received(double stamp) { working_.lidar.observe(stamp); }
 void TerminalDashboard::imu_received(double stamp) { working_.imu.observe(stamp); }
-void TerminalDashboard::odometry_published(const common::Odometry &body, bool tf_published,
+void TerminalDashboard::odometry_published(const common::Odometry &body,
     const state &imu_state, const Eigen::Matrix3d &R_BI) {
     working_.odom.observe(body.timestamp);
-    if (tf_published) { working_.tf.observe(body.timestamp); }
     if (!working_.has_pose) {
         // 标定前无输出，不拿默认零状态作原点；异常首帧也不能永久污染参考变换。
         if (!std::isfinite(body.timestamp) || body.timestamp < 0 || !body.position.allFinite() ||
@@ -176,11 +175,8 @@ void TerminalDashboard::print() {
     line(date.str() + "   Elapsed: " + number(elapsed, 2) + " seconds");
     line("Sensor Rates: LiDAR recv @ " + number(hz(s.lidar), 2) +
          " Hz, IMU @ " + (d.imu_enabled ? number(hz(s.imu), 2) : "disabled") + " Hz");
-    const double odom_hz = hz(s.odom), tf_hz = hz(s.tf);
-    const std::string output_rates = std::abs(odom_hz - tf_hz) < 0.05 ? number(odom_hz, 1) :
-        number(odom_hz, 1) + "/" + number(tf_hz, 1);
     line("Processing Rate     :: " + number(hz(s.processed), 2) +
-         " Hz; odom/TF @ " + output_rates + " Hz");
+         " Hz; odom @ " + number(hz(s.odom), 1) + " Hz");
     line("Clouds recv/accept/proc :: " + std::to_string(d.scans_received) + "/" +
          std::to_string(d.scans_accepted) + "/" + std::to_string(d.scans_processed));
     line("Cloud reject/pending    :: " + std::to_string(d.scans_rejected) + "/" + std::to_string(d.scans_dropped));

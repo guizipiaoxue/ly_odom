@@ -1,0 +1,6 @@
+string session_id
+uint64 id
+---
+bool success
+string message
+ly_locate/Keyframe keyframe

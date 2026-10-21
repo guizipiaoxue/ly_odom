@@ -217,12 +217,14 @@ fs::path default_config()
 {
   const auto share = fs::absolute(
     ament_index_cpp::get_package_share_directory("ly_bag_recorder")).lexically_normal();
-  // 从当前ament安装位置查找源码仓库，移动整个仓库后仍读取新位置的外部配置。
-  // 源码目录标记用于跳过share下的安装副本，避免它抢先匹配config/rosbag.yaml。
+  // 从ament安装位置向上查找包内源码配置，避免先读到share中的安装副本。
+  // 不依赖当前工作目录或编译机器的绝对路径，独立部署时回退到share。
   for (auto ancestor = share; !ancestor.empty();) {
-    const auto source = ancestor / "config/rosbag.yaml";
-    if (fs::is_directory(ancestor / "odom_ws/src/ly_bag_recorder") && fs::exists(source)) {
-      return source;
+    for (const auto & relative : {
+        "src/ly_bag_recorder/config/rosbag.yaml",
+        "odom_ws/src/ly_bag_recorder/config/rosbag.yaml"}) {
+      const auto source = ancestor / relative;
+      if (fs::is_regular_file(source)) {return source;}
     }
     const auto parent = ancestor.parent_path();
     if (parent == ancestor) break;

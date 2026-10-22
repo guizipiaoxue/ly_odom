@@ -19,6 +19,7 @@
 #include <std_srvs/srv/trigger.hpp>
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <mutex>
+#include <optional>
 
 namespace ly_lio {
 // 默认互斥回调组串行更新算法；文件服务单独分组，快照加锁后释放再进行磁盘写入。
@@ -26,6 +27,7 @@ class LyLioNode : public rclcpp::Node {
     std::unique_ptr<LyLio> lio_;
     rclcpp::Publisher<ly_lio::msg::ScanSession>::SharedPtr session_publisher_;
     std::string output_session_id_;
+    std::optional<geometry_msgs::msg::PoseStamped> output_origin_;
     std::unique_ptr<LidarAdapterBase> lidar_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odometry_publisher_;

@@ -2,3 +2,8 @@
 # odom原点重建/节点重启时更换，不能将不同会话的局部云拼为同一地图。
 std_msgs/Header header
 string session_id
+# 本会话标定和初图完成后首个真实输出的机体位姿T_OB_first，每条标签重复携带。
+# 后端以该时刻baselink为固定map系；晚启动不能改用首个收到的位姿。
+string body_frame
+builtin_interfaces/Time origin_stamp
+geometry_msgs/Pose origin_pose

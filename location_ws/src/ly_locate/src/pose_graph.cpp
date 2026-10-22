@@ -33,6 +33,7 @@ gtsam::SharedNoiseModel diagonal_noise(double r, double t) {
 
 struct PoseGraph::Impl {
     GraphSettings settings;
+    Pose odom_to_map;
     gtsam::ISAM2 isam;
     std::vector<Pose> raw;
 
@@ -45,8 +46,8 @@ struct PoseGraph::Impl {
 
     std::vector<Edge> edges;
 
-    explicit Impl(GraphSettings s)
-        : settings(s), isam([] {
+    Impl(GraphSettings s, Pose transform)
+        : settings(s), odom_to_map(std::move(transform)), isam([] {
               gtsam::ISAM2Params p;
               p.relinearizeThreshold = 0.01;
               p.relinearizeSkip = 1;
@@ -55,7 +56,8 @@ struct PoseGraph::Impl {
     }
 };
 
-PoseGraph::PoseGraph(GraphSettings s) : impl_(std::make_unique<Impl>(s)) {
+PoseGraph::PoseGraph(GraphSettings s, Pose odom_to_map)
+    : impl_(std::make_unique<Impl>(s, std::move(odom_to_map))) {
 }
 
 PoseGraph::~PoseGraph() = default;
@@ -65,10 +67,10 @@ void PoseGraph::append(const Pose& raw) {
     const size_t i = d.raw.size();
     gtsam::NonlinearFactorGraph factors;
     gtsam::Values values;
-    Pose initial = raw;
+    Pose initial = d.odom_to_map * raw;
     if (i == 0) {
         factors.add(
-            gtsam::PriorFactor<gtsam::Pose3>(0, to_gtsam_pose(raw), diagonal_noise(1e-4, 1e-4)));
+            gtsam::PriorFactor<gtsam::Pose3>(0, to_gtsam_pose(initial), diagonal_noise(1e-4, 1e-4)));
     } else {
         const Pose z = d.raw.back().inverse() * raw;
         factors.add(gtsam::BetweenFactor<gtsam::Pose3>(

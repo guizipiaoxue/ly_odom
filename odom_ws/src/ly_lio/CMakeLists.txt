@@ -31,6 +31,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(std_srvs REQUIRED)
@@ -39,7 +40,8 @@ find_package(yaml-cpp REQUIRED)
 # 标准 PointCloud2 模式不依赖 Livox；找到驱动时再启用自定义消息适配器。
 find_package(livox_ros_driver2 QUIET)
 
-rosidl_generate_interfaces(${PROJECT_NAME} "msg/ScanSession.msg" DEPENDENCIES std_msgs)
+rosidl_generate_interfaces(${PROJECT_NAME} "msg/ScanSession.msg"
+  DEPENDENCIES std_msgs geometry_msgs builtin_interfaces)
 rosidl_get_typesupport_target(ly_lio_typesupport ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 add_library(ly_lio_core SHARED

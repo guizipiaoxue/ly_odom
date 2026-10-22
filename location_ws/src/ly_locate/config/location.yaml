@@ -59,7 +59,7 @@ location_map:
     odom_frame: odom
     body_frame: baselink
     map_frame: map
-    map_leaf: 0.20
+    map_leaf: 0.01
     map_publish_interval: 2.0
     save_directory: maps/location_export
     save_on_shutdown: true  # Ctrl+C/SIGTERM后导出最新收到的完整图；缺帧明确报错，不保存残图

@@ -22,7 +22,8 @@ struct GraphSettings {
 // 隔离GTSAM和PCL模板，避免同一翻译单元引入第三方内部Eigen头。
 class PoseGraph {
 public:
-    explicit PoseGraph(GraphSettings settings);
+    // 固定T_MO仅改变全局坐标；原始T_OB和相邻/回环相对因子保持原定义。
+    PoseGraph(GraphSettings settings, Pose odom_to_map);
     ~PoseGraph();
     void append(const Pose& raw);
     // from_T_to 把 to 帧的局部点变换到 from 帧；拒绝时保留原图。

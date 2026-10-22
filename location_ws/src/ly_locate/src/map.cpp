@@ -80,14 +80,21 @@ public:
             session_topic, rclcpp::QoS(1000).reliable().transient_local(),
             [this](const ly_lio::msg::ScanSession& m) {
                 try {
-                    if (m.header.frame_id != odom_ || m.session_id.empty()) {
+                    if (m.header.frame_id != odom_ || m.body_frame != body_ ||
+                        m.session_id.empty()) {
                         return;
                     }
                     const auto stamp = ns(m.header.stamp);
+                    const auto origin_stamp = ns(m.origin_stamp);
+                    const Pose origin = pose(m.origin_pose);
+                    if (origin_stamp > stamp) {
+                        throw std::invalid_argument("会话原点晚于当前Odometry");
+                    }
                     std::lock_guard lock(mutex_);
                     if (retired_sources_.count(m.session_id)) {
                         return;
                     }
+                    validate_origin_locked(m.session_id, origin_stamp, origin);
                     if (!source_.empty() && source_ != m.session_id) {
                         retired_sources_.insert(source_);
                         reset_locked();
@@ -172,6 +179,24 @@ public:
     }
 
 private:
+    // 首帧机体原点属于源LIO会话，不随图版本、消息到达顺序或回环修正改变。
+    void validate_origin_locked(const std::string& source, int64_t stamp, const Pose& origin) {
+        if (invalid_sources_.count(source)) {
+            throw std::invalid_argument("源会话首帧原点已冲突");
+        }
+        const auto previous = origins_.find(source);
+        if (previous != origins_.end() &&
+            (previous->second.first != stamp ||
+             !previous->second.second.matrix().isApprox(origin.matrix(), 1e-12))) {
+            invalid_sources_.insert(source);
+            if (source_ == source) {
+                reset_locked();
+            }
+            throw std::invalid_argument("源会话首帧机体原点被修改，拒绝串图");
+        }
+        origins_.emplace(source, std::make_pair(stamp, origin));
+    }
+
     void enqueue_live_locked(Live live) {
         if (live_queue_.size() >= size_t(queue_limit_)) {
             live_queue_.pop_front();
@@ -193,7 +218,7 @@ private:
         }
     }
 
-    void reset_locked() {
+    void reset_locked(bool keep_live = false) {
         if (graph_) {
             retired_graphs_.insert(graph_->session_id);
         }
@@ -201,8 +226,10 @@ private:
         keys_.clear();
         staged_.clear();
         committed_.reset();
-        latest_live_pose_.reset();
-        latest_live_header_.reset();
+        if (!keep_live) {
+            latest_live_pose_.reset();
+            latest_live_header_.reset();
+        }
         last_tf_stamp_ = -1;
         dirty_ = true;
         // 发布空图使晚到订阅者不会继续显示旧odom原点地图。
@@ -221,12 +248,17 @@ private:
             m->session_id.empty() || m->source_session_id.empty() || m->revision == 0) {
             throw std::invalid_argument("图坐标系/会话/revision不匹配");
         }
+        const auto origin_stamp = ns(m->origin_stamp);
+        const Pose origin = pose(m->origin_pose);
         int64_t last = -1;
         for (size_t i = 0; i < m->poses.size(); ++i) {
             const auto& p = m->poses[i];
             const auto stamp = ns(p.stamp);
             if (p.id != i || stamp <= last) {
                 throw std::invalid_argument("图关键帧ID/时间不连续递增");
+            }
+            if (origin_stamp > stamp) {
+                throw std::invalid_argument("地图原点晚于关键帧");
             }
             pose(p.odom_pose);
             pose(p.map_pose);
@@ -258,6 +290,7 @@ private:
         if (retired_sources_.count(m->source_session_id) || retired_graphs_.count(m->session_id)) {
             return;
         }
+        validate_origin_locked(m->source_session_id, origin_stamp, origin);
         // 图快照自身带原始会话，可先于实时标签到达；新源仍必须由逐帧标签确认。
         if (source_.empty()) {
             source_ = m->source_session_id;
@@ -297,7 +330,8 @@ private:
             if (graph_) {
                 retired_graphs_.insert(graph_->session_id);
             }
-            reset_locked();
+            // 同源首个图可能晚于真实Odometry；保留已精确关联的位姿供提交后发TF。
+            reset_locked(true);
             const auto stage = staged_sessions_.find(m->session_id);
             if (stage != staged_sessions_.end()) {
                 staged_ = std::move(stage->second);
@@ -672,12 +706,21 @@ private:
                       << edge.overlap << '\n';
             }
             write_text(temporary / "loops.csv", loops.str());
+            const Pose odom_to_map = pose(graph->origin_pose).inverse();
+            const Eigen::Quaterniond map_rotation(odom_to_map.rotation());
             std::ostringstream meta;
-            meta << "format: ly_locate_keyframes_v1\nsession_id: " << graph->session_id
+            meta << std::setprecision(17)
+                 << "format: ly_locate_keyframes_v2\nsession_id: " << graph->session_id
                  << "\nsource_session_id: " << graph->source_session_id
                  << "\nrevision: " << graph->revision << "\nmap_frame: " << map_
                  << "\nodom_frame: " << odom_ << "\nbody_frame: " << body_
-                 << "\nkeyframes: " << keys.size() << "\nmap_leaf: " << leaf_ << "\n";
+                 << "\nmap_origin: first_calibrated_baselink"
+                 << "\norigin_stamp_ns: " << ns(graph->origin_stamp)
+                 << "\nmap_from_odom_translation: [" << odom_to_map.translation().x() << ", "
+                 << odom_to_map.translation().y() << ", " << odom_to_map.translation().z() << "]"
+                 << "\nmap_from_odom_quaternion_xyzw: [" << map_rotation.x() << ", "
+                 << map_rotation.y() << ", " << map_rotation.z() << ", " << map_rotation.w()
+                 << "]\nkeyframes: " << keys.size() << "\nmap_leaf: " << leaf_ << "\n";
             write_text(temporary / "manifest.yaml", meta.str());
             std::filesystem::rename(temporary, directory);
         } catch (...) {
@@ -692,6 +735,8 @@ private:
     std::string body_;
     std::string map_;
     std::string source_;
+    std::map<std::string, std::pair<int64_t, Pose>> origins_;
+    std::set<std::string> invalid_sources_;
     std::string save_directory_;
     bool save_on_shutdown_;
     double leaf_;

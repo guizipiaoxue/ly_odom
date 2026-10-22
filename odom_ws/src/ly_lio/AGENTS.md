@@ -49,6 +49,8 @@ ScanSession随每个已选Odometry同stamp发布（reliable/transient_local/dept
 
 ## 构建、代码与验证
 
+2026-10-22：ScanSession每条携带首个标定和初图完成后真实机体Odometry的body_frame/origin_stamp/origin_pose；先做固定安装变换再冻结原点，reset/缺段重建随UUID清除。后端以该首帧baselink为map，`T_MO0=inverse(T_OB0)`，不能取首个收到的较晚位姿或首有效关键帧替代。LoopUpdate重复携带同一原点；地图/路径/TF/PCD同约定，内部odom/P不变。修改消息后同时重建ly_lio与ly_locate，旧消息/地图需从原始测量重算。
+
 本包是独立ROS2 Humble/C++20/默认Release包，保留中文关键注释和MIT/第三方许可；Point-LIO、small_point_lio和外部Sentry PLIO只读参考，不动态引用源码，不构建ROS1参考。禁用fast-math，可选LY_LIO_NATIVE_OPTIMIZATION；标准PC2独立构建不强依赖Livox自定义消息。
 
 ```bash

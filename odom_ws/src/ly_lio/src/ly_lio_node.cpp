@@ -408,6 +408,7 @@ LyLioNode::LyLioNode(const rclcpp::NodeOptions &options)
 
 void LyLioNode::clear_output_history() {
     output_session_id_ = new_output_session();
+    output_origin_.reset();
     path_.poses.clear();
     last_path_time_ = -1;
     if (terminal_) {
@@ -466,6 +467,15 @@ void LyLioNode::publish_odometry(const common::Odometry &imu_odometry) {
     session.header.stamp = ros_time(odometry.timestamp);
     session.header.frame_id = odom_frame_;
     session.session_id = output_session_id_;
+    // 安装外参已由body_odometry组合；固定的是首个真实机体输出，不是首个关键帧。
+    if (!output_origin_) {
+        output_origin_.emplace();
+        output_origin_->header = msg.header;
+        output_origin_->pose = msg.pose.pose;
+    }
+    session.body_frame = body_frame_;
+    session.origin_stamp = output_origin_->header.stamp;
+    session.origin_pose = output_origin_->pose;
     session_publisher_->publish(session);
     odometry_publisher_->publish(msg);
     if (terminal_) {

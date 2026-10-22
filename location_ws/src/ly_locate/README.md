@@ -1,6 +1,6 @@
 # ly_locate 在线回环与建图
 
-更新：2026-10-21。ROS 2 Humble，C++20，默认Release，无预建地图。re_location.cpp保留空占位，不参与构建。
+更新：2026-10-22。ROS 2 Humble，C++20，默认Release，无预建地图。re_location.cpp保留空占位，不参与构建。
 
 ## 数据流与坐标
 
@@ -11,6 +11,12 @@ ScanSession随每个已选Odometry同stamp发布（reliable/transient_local/dept
 后端直接消费/ly_lio/odometry，不再订阅TF。loop只读取扫描末baselink注册云并保存局部关键帧；map只读取关键帧/完整图和轻量Odometry/会话标签，不订阅、转换或缓存实时整帧注册云。删除/location/cloud_registered及live_preview分支。固定map中逐帧按优化T_MB重建；已提交图的末关键帧给出T_MO=T_MB_k*inverse(T_OB_k)，同stamp当前位姿T_OB经T_MB=T_MO*T_OB直接发布map→baselink。odom仅保留为内部固定参考系和消息字段，不发布涉及odom的动态TF。未提交完整地图前没有map→baselink；旧图提交时允许同stamp发布修正更新。
 
 局部云表达的是扫描末云台中心（当前frame名baselink），不是活动底盘。完整地图保持固定map参考系，不能把不同时刻的局部云直接相加。后端不回写24维滤波器。
+
+### 固定map参考系
+
+地图固定参考系约定（2026-10-22）：令`t0`为LIO静止标定、初图完成后本会话首个真实Odometry的时间。LIO先组合安装外参`T_BI=T_BL*inverse(T_IL)`，得到`T_OB0=T_OI0*inverse(T_BI)`；map定义为该时刻的baselink，固定初始变换`T_MO0=inverse(T_OB0)`。图的首关键帧先验为`T_MO0*T_OB_k`；它可能晚于`t0`，不能强制清零该关键帧。无回环时`T_MB(t)=T_MO0*T_OB(t)`，首个LIO机体位姿为单位阵；回环后仍在这个固定map中优化历史。map轴向跟随`t0`的机体安装轴，不额外对齐重力。
+
+`ScanSession`每条消息携带`body_frame/origin_stamp/origin_pose`（源会话首个`T_OB0`），`LoopUpdate`重复携带固定原点。后端晚启动、首帧云无效或丢帧不重新选择原点；同源原点冲突拒绝建图。map.pcd、路径、图位姿和map→baselink统一使用该坐标系；局部关键帧仍在各自采集时刻的baselink。session.yaml和manifest.yaml记录原点整数纳秒及固定`map_from_odom_translation/quaternion_xyzw`（double 17位），该固定定义不同于回环后由末关键帧计算的实时修正。导出格式为`ly_locate_keyframes_v2`；旧会话消息/地图不能直接混用，应从原始传感器数据重算，不能仅修改frame_id。LIO内部odom、24维状态与P不受此坐标定义改变。
 
 ## 防误回环
 

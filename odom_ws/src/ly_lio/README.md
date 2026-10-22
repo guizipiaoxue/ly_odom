@@ -37,6 +37,7 @@ IMU芯片位置`[0.011,0.02329,-0.04412]`m，按显式约定换算为内部lidar
 | 接口 | 类型 / 作用 |
 | --- | --- |
 | `/ly_lio/odometry` | nav_msgs/Odometry，含机体系速度与协方差 |
+| `/ly_lio/scan_session` | ScanSession，同stamp会话标签；重复携带标定后首个真实机体位姿origin_stamp/origin_pose及body_frame，后端据此定义首帧baselink地图原点 |
 | `/ly_lio/cloud_registered` | PointCloud2，reliable/depth10，逐批后验补偿并统一转到扫描末 baselink 的 XYZ 点云 |
 | `/ly_lio/path` | nav_msgs/Path，有界轨迹 |
 | `/tf` | LIO不创建动态发布者；建图链路由后端发布map → baselink |

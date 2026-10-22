@@ -485,6 +485,16 @@ ScanSession随每个已选Odometry同stamp发布（reliable/transient_local/dept
 
 ## 15. 独立建图退出保存
 
+### 15.1 固定map参考系（2026-10-22）
+
+map取本次LIO会话静止标定和初图完成后首个真实输出时刻`t0`的机体baselink系。内部odom仍以初始IMU原点为参考，固定安装组合`T_BI=T_BL*inverse(T_IL)`不变，`T_OB0=T_OI0*inverse(T_BI)`已经包含安装旋转及杆臂。定义固定`T_MO0=inverse(T_OB0)`，将首关键帧先验左乘为`T_MO0*T_OB_k`，相邻里程计/回环因子仍使用局部相对SE(3)。首关键帧可能晚于`t0`，不能把后端首个收到的位姿或首个有效关键帧重新设为零。
+
+无回环时`T_MB(t)=T_MO0*T_OB(t)`，因而`T_MB(t0)=I`；map轴向为`t0`的baselink轴向，不做额外重力水平化。回环在固定map中优化`T_MB_k`，实时修正仍为`T_MO(t)=T_MB_k*inverse(T_OB_k)`。各局部点按`p_M=T_MB_k*p_Bk`重建，路径、TF和导出PCD保持相同坐标约定。
+
+节点在机体外参变换后的首个真实Odometry冻结`origin_stamp/origin_pose=T_OB0`，每条ScanSession重复携带并注明body_frame；reset/缺段重建时与UUID一起清除。LoopUpdate携带相同固定原点，晚启动也可恢复；原点冲突拒绝拼图。session.yaml和导出manifest.yaml以17位double记录固定`T_MO0`及整数纳秒原点时刻，manifest格式升为ly_locate_keyframes_v2。旧会话消息/地图需从原始输入重算，不能混喂新接口。此变换只定义后端坐标，不改变LIO估计、P或噪声。
+
+### 15.2 退出保存
+
 ly_locate的loop运行中按session归档局部关键帧PCD、poses.csv、loops.csv、graph.g2o与session.yaml到maps/location。此目录不等于拼接地图导出。map节点的/location/map_save服务导出已提交完整版本；默认save_on_shutdown=true，在正常Ctrl+C/SIGTERM导致executor停止后先join工作线程，再基于最新已收到且局部关键帧齐全的图快照进行文件导出，不依赖已停止的ROS服务，也不等待周期可视化重建限频。
 
 导出根由location.yaml的save_directory指定，默认maps/location_export；新建session/revision/随机后缀目录，写XYZ二进制压缩map.pcd、keyframes/*.pcd、17位double位姿/整数纳秒stamp的poses.csv、loops.csv和manifest.yaml，临时目录完成后rename，不覆盖历史。空图不导出；缺局部关键帧/写盘错误报错并非零退出，不用旧图代替最新图。launch给map节点30秒SIGTERM升级宽限。最后尚未传给map的后端更新不保证纳入，SIGKILL或断电不会运行正常退出保存。该改动只补保存生命周期，不改变地图筛选、坐标公式和LIO估计。

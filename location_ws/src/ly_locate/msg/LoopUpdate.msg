@@ -4,6 +4,9 @@ string session_id
 string source_session_id
 string odom_frame
 string body_frame
+# 固定map参考：源LIO会话首个真实baselink输出的T_OB_first，回环不得修改。
+builtin_interfaces/Time origin_stamp
+geometry_msgs/Pose origin_pose
 uint64 revision
 bool loop_closed
 uint64 loop_from

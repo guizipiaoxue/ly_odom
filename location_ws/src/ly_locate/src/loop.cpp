@@ -20,6 +20,11 @@
 namespace ly_locate {
 // ROS 回调只接收入队；工作线程依次处理扫描、持久化关键帧并更新位姿图。
 class LoopNode final : public rclcpp::Node {
+    struct Origin {
+        int64_t stamp;
+        Pose body_in_odom;
+    };
+
     struct Frame {
         int64_t stamp;
         Pose raw;
@@ -154,11 +159,25 @@ public:
             session_topic, rclcpp::QoS(1000).reliable().transient_local(),
             [this](const ly_lio::msg::ScanSession& m) {
                 try {
-                    if (m.header.frame_id != odom_ || m.session_id.empty()) {
+                    if (m.header.frame_id != odom_ || m.body_frame != body_ ||
+                        m.session_id.empty()) {
                         return;
                     }
                     const auto stamp = ns(m.header.stamp);
+                    const Origin origin{ns(m.origin_stamp), pose(m.origin_pose)};
+                    if (origin.stamp > stamp) {
+                        throw std::invalid_argument("会话原点晚于当前Odometry");
+                    }
                     std::lock_guard lock(input_mutex_);
+                    const auto previous = origins_.find(m.session_id);
+                    if (previous != origins_.end() &&
+                        (previous->second.stamp != origin.stamp ||
+                         !previous->second.body_in_odom.matrix().isApprox(
+                             origin.body_in_odom.matrix(), 1e-12))) {
+                        invalid_origins_.insert(m.session_id);
+                        throw std::invalid_argument("同会话首帧机体原点冲突，拒绝继续建图");
+                    }
+                    origins_.emplace(m.session_id, origin);
                     auto it = sessions_.find(stamp);
                     // 循环回放重用stamp且跨话题乱序时宁可丢点，不猜测其所属会话。
                     if (it != sessions_.end() && it->second != m.session_id) {
@@ -226,6 +245,7 @@ private:
         while (rclcpp::ok()) {
             Input input;
             std::string source_session;
+            Origin origin;
             {
                 std::unique_lock lock(input_mutex_);
                 cv_.wait_for(lock, std::chrono::milliseconds(20), [this] {
@@ -252,6 +272,11 @@ private:
                 }
                 if (tag != sessions_.end()) {
                     source_session = tag->second;
+                    if (invalid_origins_.count(source_session)) {
+                        queue_.pop_front();
+                        continue;
+                    }
+                    origin = origins_.at(source_session);
                 }
             }
             const auto age =
@@ -281,7 +306,10 @@ private:
                     frames_.clear();
                     constraints_.clear();
                     pending_targets_.clear();
-                    graph_ = std::make_unique<PoseGraph>(graph_settings_);
+                    origin_ = origin;
+                    // map就是首个标定后baselink：T_MO = inverse(T_OB_first)。
+                    graph_ = std::make_unique<PoseGraph>(
+                        graph_settings_, origin_.body_in_odom.inverse());
                     revision_ = 0;
                     pending_ = 0;
                     last_loop_ = 0;
@@ -520,6 +548,8 @@ private:
         update.source_session_id = source_session_;
         update.odom_frame = odom_;
         update.body_frame = body_;
+        update.origin_stamp = rclcpp::Time(origin_.stamp);
+        update.origin_pose = message(origin_.body_in_odom);
         update.revision = ++revision_;
         update.loop_closed = closed;
         update.loop_from = from;
@@ -574,10 +604,19 @@ private:
         write_text(directory_ / "poses.csv", csv.str());
         graph_->save((directory_ / "graph.g2o.tmp").string());
         std::filesystem::rename(directory_ / "graph.g2o.tmp", directory_ / "graph.g2o");
+        const Pose odom_to_map = origin_.body_in_odom.inverse();
+        const Eigen::Quaterniond map_rotation(odom_to_map.rotation());
         std::ostringstream meta;
-        meta << "session_id: " << session_ << "\nsource_session_id: " << source_session_
+        meta << std::setprecision(17)
+             << "session_id: " << session_ << "\nsource_session_id: " << source_session_
              << "\nrevision: " << revision_ << "\nmap_frame: " << map_ << "\nodom_frame: " << odom_
-             << "\nbody_frame: " << body_ << "\n";
+             << "\nbody_frame: " << body_ << "\nmap_origin: first_calibrated_baselink"
+             << "\norigin_stamp_ns: " << origin_.stamp
+             << "\nmap_from_odom_translation: [" << odom_to_map.translation().x() << ", "
+             << odom_to_map.translation().y() << ", " << odom_to_map.translation().z() << "]"
+             << "\nmap_from_odom_quaternion_xyzw: [" << map_rotation.x() << ", "
+             << map_rotation.y() << ", " << map_rotation.z() << ", " << map_rotation.w()
+             << "]\n";
         write_text(directory_ / "session.yaml", meta.str());
         update_pub_->publish(update);
     }
@@ -592,6 +631,7 @@ private:
     std::string session_;
     std::filesystem::path directory_;
     std::set<std::string> retired_;
+    Origin origin_;
     double distance_;
     double rotation_;
     double interval_;
@@ -647,6 +687,8 @@ private:
     std::condition_variable cv_;
     std::deque<Input> queue_;
     std::map<int64_t, std::string> sessions_;
+    std::map<std::string, Origin> origins_;
+    std::set<std::string> invalid_origins_;
     std::set<int64_t> ambiguous_;
     std::thread worker_;
     bool stop_ = false;

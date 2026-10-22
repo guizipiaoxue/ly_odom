@@ -32,6 +32,8 @@ ScanSession随每个已选Odometry同stamp发布（reliable/transient_local/dept
 
 ## 当前模型（2026-10-17要求继续有效）
 
+2026-10-22地图坐标约定：map固定为本次LIO静止标定和初图完成后首个真实Odometry对应的baselink系。`T_OB0=T_OI0*inverse(T_BI)`已含安装外参，`T_MO0=inverse(T_OB0)`；首关键帧先验左乘该变换，不把较晚关键帧误作首帧。ScanSession及LoopUpdate重复携带不可变origin_stamp/origin_pose，后端晚启动不改锚点；冲突拒绝。PCD/路径/TF/图位姿统一，内部odom及24维滤波不变。导出manifest v2记录固定原点，旧地图/会话消息不能直接混用。
+
 - 状态/误差P真正24维 `[p,R,v,omega,a,g,bg,ba]`，流形 `SO(3)×R^21`；固定R_IL/t_IL只作参数，不保留30维外参占位，不在线估计，不接轮速。
 - IMU采用角速度/比力输出观测，最多6维，达到配置量程95%逐轴屏蔽；不丢整条，不持续锁定速度、重力或零偏。a是IMU系比力，世界加速度为R*a+g。
 - 激光逐点到历史地图五近邻PCA平面的标量残差；原点补偿到真实批末，同一先验计算各点残差/H并累加信息，一次联合更新完整24维P。H直接含p/R/v/omega十二列。
